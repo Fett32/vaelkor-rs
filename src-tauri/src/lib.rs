@@ -142,7 +142,7 @@ pub fn run() {
 
                     // Phase 1: drain initial negotiation noise.
                     let drain_until = std::time::Instant::now()
-                        + std::time::Duration::from_millis(800);
+                        + std::time::Duration::from_millis(500);
                     while std::time::Instant::now() < drain_until {
                         match reader.read(&mut buf) {
                             Ok(0) => {
@@ -163,16 +163,6 @@ pub fn run() {
                     let _ = std::process::Command::new("tmux")
                         .args(["refresh-client", "-t", "vaelkor-main"])
                         .output();
-                    // Small extra drain after refresh to catch any redraw noise.
-                    let redraw_drain = std::time::Instant::now()
-                        + std::time::Duration::from_millis(200);
-                    while std::time::Instant::now() < redraw_drain {
-                        match reader.read(&mut buf) {
-                            Ok(0) => return,
-                            Ok(_) => {}
-                            Err(_) => return,
-                        }
-                    }
 
                     // Phase 2: forward PTY output to frontend.
                     loop {
