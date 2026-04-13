@@ -29,6 +29,9 @@ pub fn create_session(name: &str, command: &str) -> Result<()> {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+
+    apply_session_defaults(name);
+
     Ok(())
 }
 
@@ -64,6 +67,8 @@ pub fn create_session_with_dir(name: &str, command: &str, workdir: Option<&str>)
             String::from_utf8_lossy(&out.stderr)
         );
     }
+
+    apply_session_defaults(name);
 
     Ok(())
 }
@@ -112,6 +117,17 @@ pub fn send_keys(name: &str, text: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Apply Vaelkor's default session options (mouse, scrollback).
+/// Called right after session creation so the initial pane inherits the limits.
+fn apply_session_defaults(name: &str) {
+    let _ = Command::new("tmux")
+        .args(["set-option", "-t", name, "mouse", "on"])
+        .output();
+    let _ = Command::new("tmux")
+        .args(["set-option", "-t", name, "history-limit", "50000"])
+        .output();
 }
 
 /// Capture the last `lines` lines of visible pane output.

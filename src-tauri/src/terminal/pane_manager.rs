@@ -54,6 +54,15 @@ impl PaneManager {
     pub async fn ensure_main_session(&self) -> Result<()> {
         if self.session_exists(MAIN_SESSION).await {
             tracing::info!("reusing existing {MAIN_SESSION} session");
+            // Ensure session options are set (may have been lost if session predates this code).
+            let _ = Command::new("tmux")
+                .args(["set-option", "-t", MAIN_SESSION, "mouse", "on"])
+                .output()
+                .await;
+            let _ = Command::new("tmux")
+                .args(["set-option", "-t", MAIN_SESSION, "history-limit", "50000"])
+                .output()
+                .await;
             self.scan_existing_panes().await;
             return Ok(());
         }
@@ -74,6 +83,18 @@ impl PaneManager {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+
+        // Enable mouse support (scroll, click-to-focus, drag-select) for our session.
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", MAIN_SESSION, "mouse", "on"])
+            .output()
+            .await;
+
+        // Increase scrollback buffer (default 2000 is too small for agent output).
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", MAIN_SESSION, "history-limit", "50000"])
+            .output()
+            .await;
 
         // Put a status message in the initial pane.
         let _ = Command::new("tmux")
