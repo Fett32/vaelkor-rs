@@ -7,10 +7,11 @@ use anyhow::{bail, Context, Result};
 use detector::{AgentKind, IdleDetector};
 use protocol::{
     AgentState, DaemonShutdown, Envelope, StatusRequest, StatusResponse, TaskAccept, TaskAssign,
-    TaskComplete, WrapperError, WrapperRegister, MSG_REGISTER, MSG_SHUTDOWN, MSG_STATUS_REQUEST,
-    MSG_STATUS_RESPONSE, MSG_TASK_ACCEPT, MSG_TASK_ASSIGN, MSG_TASK_COMPLETE, MSG_ERROR,
+    TaskComplete, UserIntervention, WrapperError, WrapperRegister, MSG_REGISTER, MSG_SHUTDOWN,
+    MSG_STATUS_REQUEST, MSG_STATUS_RESPONSE, MSG_TASK_ACCEPT, MSG_TASK_ASSIGN, MSG_TASK_COMPLETE,
+    MSG_ERROR, MSG_USER_INTERVENTION,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
@@ -24,6 +25,11 @@ const IDLE_TAIL: usize = 5;
 /// Idle pattern must be stable for this many seconds before marking complete.
 const IDLE_STABLE_SECS: f64 = 3.0;
 
+/// Grace period after injection before user-intervention detection kicks in.
+const INJECTION_GRACE_SECS: f64 = 10.0;
+/// Cooldown between successive user.intervention events.
+const INTERVENTION_COOLDOWN_SECS: f64 = 30.0;
+
 /// Reconnect backoff: initial delay, max delay, multiplier.
 const RECONNECT_INITIAL_MS: u64 = 500;
 const RECONNECT_MAX_MS: u64 = 30_000;
@@ -31,12 +37,67 @@ const RECONNECT_MULTIPLIER: f64 = 2.0;
 
 // ---- CLI args ---------------------------------------------------------------
 
-fn parse_args() -> Result<String> {
-    let mut args = std::env::args().skip(1);
-    match args.next() {
-        Some(name) if !name.is_empty() => Ok(name),
-        _ => bail!("Usage: vaelkor-wrapper <agent-name>  e.g. vaelkor-wrapper claude"),
+struct WrapperArgs {
+    agent: String,
+    workdir: Option<String>,
+    command: Option<String>,
+    startup_file: Option<String>,
+}
+
+fn parse_args() -> Result<WrapperArgs> {
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let mut workdir: Option<String> = None;
+    let mut command: Option<String> = None;
+    let mut startup_file: Option<String> = None;
+
+    // Extract flags
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--workdir" => {
+                args.remove(i);
+                if i < args.len() {
+                    workdir = Some(args.remove(i));
+                } else {
+                    bail!("--workdir requires a value");
+                }
+            }
+            "--command" => {
+                args.remove(i);
+                if i < args.len() {
+                    command = Some(args.remove(i));
+                } else {
+                    bail!("--command requires a value");
+                }
+            }
+            "--startup-file" => {
+                args.remove(i);
+                if i < args.len() {
+                    startup_file = Some(args.remove(i));
+                } else {
+                    bail!("--startup-file requires a value");
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
     }
+
+    let agent = args
+        .first()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!(
+            "Usage: vaelkor-wrapper <agent-name> [--workdir DIR] [--command CMD] [--startup-file PATH]"
+        ))?;
+
+    Ok(WrapperArgs {
+        agent,
+        workdir,
+        command,
+        startup_file,
+    })
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -46,20 +107,26 @@ fn session_name(agent: &str) -> String {
 }
 
 /// Start the tmux session if it doesn't already exist, running the agent CLI.
-fn ensure_session(session: &str, kind: &AgentKind) -> Result<()> {
+/// Returns `true` if a new session was created, `false` if reusing an existing one.
+fn ensure_session(
+    session: &str,
+    kind: &AgentKind,
+    workdir: Option<&str>,
+    explicit_command: Option<&str>,
+) -> Result<bool> {
     if tmux::session_exists(session) {
         info!(session, "reusing existing tmux session");
-        return Ok(());
+        return Ok(false);
     }
-    let command = match kind {
+    let command = explicit_command.unwrap_or(match kind {
         AgentKind::ClaudeCode => "claude",
         AgentKind::Codex => "codex",
         _ => "bash",
-    };
+    });
     info!(session, command, "creating new tmux session");
-    tmux::create_session(session, command)
+    tmux::create_session_with_dir(session, command, workdir)
         .with_context(|| format!("could not create tmux session {session}"))?;
-    Ok(())
+    Ok(true)
 }
 
 // ---- connect + register -----------------------------------------------------
@@ -117,15 +184,45 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let agent = parse_args()?;
+    let wargs = parse_args()?;
+    let agent = wargs.agent;
     let session = session_name(&agent);
-    let kind = AgentKind::from_name(&agent);
+
+    // Infer AgentKind from explicit command if provided, otherwise from agent name.
+    let kind = if let Some(ref cmd) = wargs.command {
+        AgentKind::from_name(cmd)
+    } else {
+        AgentKind::from_name(&agent)
+    };
     let detector = IdleDetector::new(&kind);
 
     info!(agent, "vaelkor-wrapper starting");
 
     // Ensure the tmux session exists (once, outside reconnect loop).
-    ensure_session(&session, &kind)?;
+    let freshly_created = ensure_session(
+        &session,
+        &kind,
+        wargs.workdir.as_deref(),
+        wargs.command.as_deref(),
+    )?;
+
+    // If session was freshly created and a startup file is set, inject its contents.
+    if freshly_created {
+        if let Some(ref startup_path) = wargs.startup_file {
+            info!(startup_path, "injecting startup file after 3s delay");
+            sleep(Duration::from_secs(3)).await;
+            match std::fs::read_to_string(startup_path) {
+                Ok(contents) => {
+                    if let Err(e) = tmux::send_keys(&session, &contents) {
+                        error!("failed to inject startup file: {e:#}");
+                    }
+                }
+                Err(e) => {
+                    error!(startup_path, "failed to read startup file: {e:#}");
+                }
+            }
+        }
+    }
 
     // Initial connection.
     let mut client = connect_and_register(&agent)
@@ -163,7 +260,12 @@ async fn run_loop(
     client: &mut client::DaemonClient,
 ) -> Result<ExitReason> {
     let mut state = AgentState::Idle;
-    let mut idle_since: Option<std::time::Instant> = None;
+    let mut idle_since: Option<Instant> = None;
+
+    // User intervention detection state.
+    let mut last_injection: Option<Instant> = None;
+    let mut last_intervention_sent: Option<Instant> = None;
+    let mut prev_fingerprint: Option<String> = None;
 
     loop {
         // ---- race: daemon message OR poll interval ----
@@ -177,6 +279,7 @@ async fn run_loop(
                             session,
                             &mut state,
                             client,
+                            &mut last_injection,
                         )
                         .await?;
                         // Reset idle timer on any daemon message.
@@ -205,8 +308,36 @@ async fn run_loop(
             let task_id = *task_id;
             match tmux::capture_pane(session, CAPTURE_LINES) {
                 Ok(lines) => {
+                    // -- user intervention detection --
+                    let tail: Vec<&str> = lines.iter().rev().take(IDLE_TAIL).map(|s| s.as_str()).collect();
+                    let fingerprint = tail.join("\n");
+                    let content_changed = prev_fingerprint.as_deref() != Some(&fingerprint);
+                    prev_fingerprint = Some(fingerprint);
+
+                    if content_changed {
+                        let now = Instant::now();
+                        let past_injection_grace = last_injection
+                            .map(|t| now.duration_since(t).as_secs_f64() >= INJECTION_GRACE_SECS)
+                            .unwrap_or(true);
+                        let past_cooldown = last_intervention_sent
+                            .map(|t| now.duration_since(t).as_secs_f64() >= INTERVENTION_COOLDOWN_SECS)
+                            .unwrap_or(true);
+                        let is_idle = detector.is_idle_tail(&lines, IDLE_TAIL);
+
+                        if past_injection_grace && past_cooldown && !is_idle {
+                            info!("detected user intervention in tmux pane");
+                            let interv_env = Envelope::new(
+                                MSG_USER_INTERVENTION,
+                                UserIntervention { agent_id: agent.to_owned() },
+                            )?;
+                            client.send(&interv_env).await?;
+                            last_intervention_sent = Some(now);
+                        }
+                    }
+
+                    // -- idle detection --
                     if detector.is_idle_tail(&lines, IDLE_TAIL) {
-                        let now = std::time::Instant::now();
+                        let now = Instant::now();
                         let first_seen = *idle_since.get_or_insert(now);
                         let elapsed = now.duration_since(first_seen).as_secs_f64();
 
@@ -248,6 +379,7 @@ async fn handle_envelope(
     session: &str,
     state: &mut AgentState,
     client: &mut client::DaemonClient,
+    last_injection: &mut Option<Instant>,
 ) -> Result<bool> {
     match env.kind.as_str() {
         MSG_TASK_ASSIGN => {
@@ -260,6 +392,7 @@ async fn handle_envelope(
             let prompt = format!("{}\n{}", task.title, task.description);
             match tmux::send_keys(session, &prompt) {
                 Ok(()) => {
+                    *last_injection = Some(Instant::now());
                     // Only send accept AFTER successful injection.
                     let accept_env = Envelope::new(
                         MSG_TASK_ACCEPT,

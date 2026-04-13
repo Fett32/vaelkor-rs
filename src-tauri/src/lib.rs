@@ -43,7 +43,7 @@ pub fn run() {
     };
 
     let pane_manager = PaneManager::new();
-    let socket_server = SocketServer::new(app_state.clone(), pane_manager.clone());
+    let socket_server = SocketServer::with_configs(app_state.clone(), pane_manager.clone(), agent_configs.clone());
     let terminal_bridge = TerminalBridge::new();
     let terminal_bridge_clone = terminal_bridge.clone();
     let session_info = daemon::session::SessionInfo::current();

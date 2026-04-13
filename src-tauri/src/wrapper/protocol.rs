@@ -24,6 +24,24 @@ pub const MSG_STATUS_RESPONSE: &str = "status.response";
 pub const MSG_REGISTER: &str = "wrapper.register";
 pub const MSG_ERROR: &str = "wrapper.error";
 pub const MSG_SHUTDOWN: &str = "daemon.shutdown";
+pub const MSG_USER_INTERVENTION: &str = "user.intervention";
+
+// Phase 9: CLI message types
+pub const MSG_CLI_STATUS: &str = "cli.status";
+pub const MSG_CLI_TASK_LIST: &str = "cli.task.list";
+pub const MSG_CLI_TASK_GET: &str = "cli.task.get";
+pub const MSG_CLI_TASK_CREATE: &str = "cli.task.create";
+pub const MSG_CLI_TASK_CANCEL: &str = "cli.task.cancel";
+pub const MSG_CLI_ASSIGN: &str = "cli.assign";
+pub const MSG_CLI_SPAWN: &str = "cli.spawn";
+pub const MSG_CLI_KILL: &str = "cli.kill";
+pub const MSG_CLI_EVENT_STREAM: &str = "cli.event.stream";
+pub const MSG_CLI_PROJECT_LIST: &str = "cli.project.list";
+pub const MSG_CLI_PROJECT_GET: &str = "cli.project.get";
+pub const MSG_CLI_PROJECT_SAVE: &str = "cli.project.save";
+pub const MSG_CLI_RESPONSE: &str = "cli.response";
+pub const MSG_CLI_ERROR: &str = "cli.error";
+pub const MSG_EVENT: &str = "event";
 
 // ---------------------------------------------------------------------------
 // Envelope — every message on the wire is wrapped in this
@@ -160,3 +178,67 @@ pub struct WrapperError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonShutdown {}
+
+// ---------------------------------------------------------------------------
+// user.intervention — wrapper signals user attention needed
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserIntervention {
+    pub agent_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9: CLI payload structs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliTaskCreate {
+    pub title: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliTaskCancel {
+    pub task_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliTaskGet {
+    pub task_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliAssign {
+    pub task_id: Uuid,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliSpawn {
+    pub agent: String,
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliKill {
+    pub instance: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliProjectGet {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliProjectSave {
+    pub name: String,
+    pub description: Option<String>,
+    pub root_dir: Option<String>,
+    pub stack: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliErrorResponse {
+    pub error: String,
+}

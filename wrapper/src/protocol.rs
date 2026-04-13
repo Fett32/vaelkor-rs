@@ -21,6 +21,7 @@ pub const MSG_STATUS_RESPONSE: &str = "status.response";
 pub const MSG_REGISTER: &str = "wrapper.register";
 pub const MSG_ERROR: &str = "wrapper.error";
 pub const MSG_SHUTDOWN: &str = "daemon.shutdown";
+pub const MSG_USER_INTERVENTION: &str = "user.intervention";
 
 // ---- envelope ---------------------------------------------------------------
 
@@ -113,6 +114,12 @@ pub struct StatusResponse {
 pub struct WrapperError {
     pub agent_id: String,
     pub message: String,
+}
+
+/// user.intervention — the user typed something directly into the tmux pane.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserIntervention {
+    pub agent_id: String,
 }
 
 // ---- runtime state (not on the wire) ----------------------------------------

@@ -4,18 +4,27 @@
 /// - wrapper.register — wrapper announces its agent_id
 /// - task.accept/complete/blocked — task state updates
 /// - status.response — heartbeat replies
+/// - cli.* — CLI commands (Phase 9)
 ///
 /// Outbound messages (task.assign, status.request) are sent via the
 /// connection registry.
 
-use crate::daemon::state::{AppState, TaskState};
+use crate::daemon::config::AgentConfig;
+use crate::daemon::project;
+use crate::daemon::state::{AppState, Task, TaskState};
 use crate::terminal::pane_manager::PaneManager;
 use crate::wrapper::protocol::{
-    Envelope, TaskAccept, TaskBlocked, TaskComplete, WrapperError, WrapperRegister,
-    MSG_ERROR, MSG_REGISTER, MSG_TASK_ACCEPT, MSG_TASK_BLOCKED, MSG_TASK_COMPLETE,
-    MSG_STATUS_RESPONSE,
+    CliAssign, CliKill, CliProjectGet, CliProjectSave, CliSpawn, CliTaskCancel, CliTaskCreate,
+    CliTaskGet, DaemonShutdown, Envelope, TaskAccept, TaskAssign, TaskBlocked, TaskComplete,
+    UserIntervention, WrapperError, WrapperRegister, MSG_CLI_ASSIGN, MSG_CLI_ERROR,
+    MSG_CLI_EVENT_STREAM, MSG_CLI_KILL, MSG_CLI_PROJECT_GET, MSG_CLI_PROJECT_LIST,
+    MSG_CLI_PROJECT_SAVE, MSG_CLI_RESPONSE, MSG_CLI_SPAWN, MSG_CLI_STATUS, MSG_CLI_TASK_CANCEL,
+    MSG_CLI_TASK_CREATE, MSG_CLI_TASK_GET, MSG_CLI_TASK_LIST, MSG_ERROR, MSG_EVENT, MSG_REGISTER,
+    MSG_SHUTDOWN, MSG_STATUS_RESPONSE, MSG_TASK_ACCEPT, MSG_TASK_ASSIGN, MSG_TASK_BLOCKED,
+    MSG_TASK_COMPLETE, MSG_USER_INTERVENTION,
 };
 use anyhow::{Context, Result};
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -23,11 +32,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 pub const DAEMON_SOCKET: &str = "/tmp/vaelkor/daemon.sock";
 
 /// A connected wrapper's write half, keyed by agent_id.
 type WriterMap = Arc<Mutex<HashMap<String, tokio::net::unix::OwnedWriteHalf>>>;
+type ChildMap = Arc<Mutex<HashMap<String, std::process::Child>>>;
+type EventSubscribers = Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>;
 
 /// Shared state for the socket server.
 #[derive(Clone)]
@@ -35,6 +47,9 @@ pub struct SocketServer {
     writers: WriterMap,
     app_state: AppState,
     pane_manager: PaneManager,
+    agent_configs: Arc<Vec<(String, AgentConfig)>>,
+    spawned: ChildMap,
+    event_subscribers: EventSubscribers,
 }
 
 impl SocketServer {
@@ -43,6 +58,24 @@ impl SocketServer {
             writers: Arc::new(Mutex::new(HashMap::new())),
             app_state,
             pane_manager,
+            agent_configs: Arc::new(Vec::new()),
+            spawned: Arc::new(Mutex::new(HashMap::new())),
+            event_subscribers: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn with_configs(
+        app_state: AppState,
+        pane_manager: PaneManager,
+        configs: Vec<(String, AgentConfig)>,
+    ) -> Self {
+        Self {
+            writers: Arc::new(Mutex::new(HashMap::new())),
+            app_state,
+            pane_manager,
+            agent_configs: Arc::new(configs),
+            spawned: Arc::new(Mutex::new(HashMap::new())),
+            event_subscribers: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -86,15 +119,54 @@ impl SocketServer {
         let mut reader = BufReader::new(read_half);
         let mut line = String::new();
 
-        // First message must be wrapper.register
+        // First message determines connection type
         let n = reader.read_line(&mut line).await?;
         if n == 0 {
-            return Ok(()); // EOF before register
+            return Ok(()); // EOF before any message
         }
 
         let env: Envelope = serde_json::from_str(line.trim())
-            .context("parse register envelope")?;
+            .context("parse first envelope")?;
 
+        // CLI messages: handle and return
+        if env.kind.starts_with("cli.") {
+            if env.kind == MSG_CLI_EVENT_STREAM {
+                // Event stream subscriber: hold connection open
+                {
+                    let mut subs = self.event_subscribers.lock().await;
+                    subs.push(write_half);
+                }
+                info!("cli event stream subscriber connected");
+
+                // Keep reading until disconnect
+                loop {
+                    line.clear();
+                    let n = reader.read_line(&mut line).await?;
+                    if n == 0 {
+                        break;
+                    }
+                }
+
+                // Remove from subscribers (find by checking write errors later,
+                // but we can't easily identify which one we are — the broadcast
+                // cleanup will handle dead writers)
+                info!("cli event stream subscriber disconnected");
+                return Ok(());
+            }
+
+            // One-shot CLI command
+            let response = self.handle_cli_message(env).await;
+            let mut resp_line = serde_json::to_string(&response)?;
+            resp_line.push('\n');
+
+            // write_half is not yet consumed — we still own it
+            let mut writer = write_half;
+            writer.write_all(resp_line.as_bytes()).await?;
+            writer.flush().await?;
+            return Ok(());
+        }
+
+        // Wrapper registration flow
         if env.kind != MSG_REGISTER {
             anyhow::bail!("first message must be wrapper.register, got {}", env.kind);
         }
@@ -105,10 +177,19 @@ impl SocketServer {
 
         info!(agent_id = %agent_id, "wrapper registered");
 
-        // Store the write half
+        // Store the write half, replacing any existing connection
         {
             let mut writers = self.writers.lock().await;
-            writers.insert(agent_id.clone(), write_half);
+            if writers.contains_key(&agent_id) {
+                warn!(agent_id = %agent_id, "replacing existing wrapper connection");
+                writers.remove(&agent_id);
+                drop(writers);
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let mut writers = self.writers.lock().await;
+                writers.insert(agent_id.clone(), write_half);
+            } else {
+                writers.insert(agent_id.clone(), write_half);
+            }
         }
 
         // Update agent status in app state
@@ -118,6 +199,13 @@ impl SocketServer {
         if let Err(e) = self.pane_manager.add_agent_pane(&agent_id).await {
             warn!(agent_id = %agent_id, "failed to add pane: {e:#}");
         }
+
+        // Broadcast connection event
+        self.broadcast_event(
+            "agent.connected",
+            json!({"agent_id": &agent_id}),
+        )
+        .await;
 
         // Read loop
         loop {
@@ -146,6 +234,13 @@ impl SocketServer {
         }
         self.app_state.set_agent_connected(&agent_id, false);
 
+        // Broadcast disconnection event
+        self.broadcast_event(
+            "agent.disconnected",
+            json!({"agent_id": &agent_id}),
+        )
+        .await;
+
         Ok(())
     }
 
@@ -158,6 +253,11 @@ impl SocketServer {
                     if let Err(e) = self.app_state.transition_task(payload.task_id, TaskState::Accepted) {
                         warn!("transition to Accepted failed: {e}");
                     }
+                    self.broadcast_event(
+                        "task.accepted",
+                        json!({"task_id": payload.task_id.to_string(), "agent_id": agent_id}),
+                    )
+                    .await;
                 }
             }
 
@@ -167,6 +267,11 @@ impl SocketServer {
                     if let Err(e) = self.app_state.transition_task(payload.task_id, TaskState::Completed) {
                         warn!("transition to Completed failed: {e}");
                     }
+                    self.broadcast_event(
+                        "task.completed",
+                        json!({"task_id": payload.task_id.to_string(), "agent_id": agent_id}),
+                    )
+                    .await;
                 }
             }
 
@@ -176,6 +281,27 @@ impl SocketServer {
                     if let Err(e) = self.app_state.transition_task(payload.task_id, TaskState::Blocked) {
                         warn!("transition to Blocked failed: {e}");
                     }
+                    self.broadcast_event(
+                        "task.blocked",
+                        json!({
+                            "task_id": payload.task_id.to_string(),
+                            "agent_id": agent_id,
+                            "reason": payload.reason,
+                        }),
+                    )
+                    .await;
+                }
+            }
+
+            MSG_USER_INTERVENTION => {
+                if let Ok(payload) = env.decode_payload::<UserIntervention>() {
+                    info!(agent_id = %payload.agent_id, "user intervention recorded");
+                    self.app_state.record_user_intervention(&payload.agent_id);
+                    self.broadcast_event(
+                        "user.intervention",
+                        json!({"agent_id": payload.agent_id}),
+                    )
+                    .await;
                 }
             }
 
@@ -193,6 +319,463 @@ impl SocketServer {
             other => {
                 warn!(agent_id, kind = other, "unknown message type");
             }
+        }
+    }
+
+    /// Handle a CLI message and return a response envelope.
+    async fn handle_cli_message(&self, env: Envelope) -> Envelope {
+        let correlation_id = env.correlation_id;
+
+        match env.kind.as_str() {
+            MSG_CLI_STATUS => {
+                let agents = self.app_state.all_agents();
+                let tasks = self.app_state.all_tasks();
+                let connected: Vec<String> = self.writers.lock().await.keys().cloned().collect();
+                match Envelope::new(
+                    MSG_CLI_RESPONSE,
+                    json!({
+                        "agents": agents,
+                        "tasks": tasks,
+                        "connected": connected,
+                    }),
+                ) {
+                    Ok(mut e) => {
+                        e.correlation_id = correlation_id;
+                        e
+                    }
+                    Err(_) => cli_error(correlation_id, "failed to build status response"),
+                }
+            }
+
+            MSG_CLI_TASK_LIST => {
+                let tasks = self.app_state.all_tasks();
+                match Envelope::new(MSG_CLI_RESPONSE, json!({"tasks": tasks})) {
+                    Ok(mut e) => {
+                        e.correlation_id = correlation_id;
+                        e
+                    }
+                    Err(_) => cli_error(correlation_id, "failed to build task list"),
+                }
+            }
+
+            MSG_CLI_TASK_GET => {
+                match env.decode_payload::<CliTaskGet>() {
+                    Ok(payload) => match self.app_state.get_task(payload.task_id) {
+                        Some(task) => match Envelope::new(MSG_CLI_RESPONSE, json!({"task": task})) {
+                            Ok(mut e) => {
+                                e.correlation_id = correlation_id;
+                                e
+                            }
+                            Err(_) => cli_error(correlation_id, "failed to serialize task"),
+                        },
+                        None => cli_error(correlation_id, &format!("task {} not found", payload.task_id)),
+                    },
+                    Err(e) => cli_error(correlation_id, &format!("invalid payload: {e}")),
+                }
+            }
+
+            MSG_CLI_TASK_CREATE => {
+                match env.decode_payload::<CliTaskCreate>() {
+                    Ok(payload) => {
+                        let task = Task::new(&payload.title, &payload.description);
+                        let task_id = task.id;
+                        self.app_state.add_task(task);
+                        info!(task_id = %task_id, title = %payload.title, "task created via CLI");
+                        self.broadcast_event(
+                            "task.created",
+                            json!({"task_id": task_id.to_string(), "title": payload.title}),
+                        )
+                        .await;
+                        match Envelope::new(
+                            MSG_CLI_RESPONSE,
+                            json!({"task_id": task_id.to_string()}),
+                        ) {
+                            Ok(mut e) => {
+                                e.correlation_id = correlation_id;
+                                e
+                            }
+                            Err(_) => cli_error(correlation_id, "failed to build response"),
+                        }
+                    }
+                    Err(e) => cli_error(correlation_id, &format!("invalid payload: {e}")),
+                }
+            }
+
+            MSG_CLI_TASK_CANCEL => {
+                match env.decode_payload::<CliTaskCancel>() {
+                    Ok(payload) => {
+                        // Try Cancelled first, fall back to Rejected
+                        let result = self
+                            .app_state
+                            .transition_task(payload.task_id, TaskState::Cancelled)
+                            .or_else(|_| {
+                                self.app_state
+                                    .transition_task(payload.task_id, TaskState::Rejected)
+                            });
+                        match result {
+                            Ok(_task) => {
+                                self.broadcast_event(
+                                    "task.cancelled",
+                                    json!({"task_id": payload.task_id.to_string()}),
+                                )
+                                .await;
+                                match Envelope::new(
+                                    MSG_CLI_RESPONSE,
+                                    json!({"cancelled": payload.task_id.to_string()}),
+                                ) {
+                                    Ok(mut e) => {
+                                        e.correlation_id = correlation_id;
+                                        e
+                                    }
+                                    Err(_) => cli_error(correlation_id, "failed to build response"),
+                                }
+                            }
+                            Err(e) => cli_error(
+                                correlation_id,
+                                &format!("failed to cancel task: {e}"),
+                            ),
+                        }
+                    }
+                    Err(e) => cli_error(correlation_id, &format!("invalid payload: {e}")),
+                }
+            }
+
+            MSG_CLI_ASSIGN => {
+                match env.decode_payload::<CliAssign>() {
+                    Ok(payload) => {
+                        // Check agent is connected
+                        let connected = self.writers.lock().await.contains_key(&payload.agent_id);
+                        if !connected {
+                            return cli_error(
+                                correlation_id,
+                                &format!("agent {} is not connected", payload.agent_id),
+                            );
+                        }
+
+                        // Look up task
+                        let task = match self.app_state.get_task(payload.task_id) {
+                            Some(t) => t,
+                            None => {
+                                return cli_error(
+                                    correlation_id,
+                                    &format!("task {} not found", payload.task_id),
+                                )
+                            }
+                        };
+
+                        // Build and send TaskAssign envelope to the agent
+                        let assign_env = match Envelope::new(
+                            MSG_TASK_ASSIGN,
+                            TaskAssign {
+                                task_id: task.id,
+                                title: task.title.clone(),
+                                description: task.description.clone(),
+                                timeout_secs: None,
+                            },
+                        ) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                return cli_error(
+                                    correlation_id,
+                                    &format!("failed to build assign envelope: {e}"),
+                                )
+                            }
+                        };
+
+                        if let Err(e) = self.send_to(&payload.agent_id, &assign_env).await {
+                            return cli_error(
+                                correlation_id,
+                                &format!("failed to send to agent: {e}"),
+                            );
+                        }
+
+                        // Update task assignment
+                        let _ = self
+                            .app_state
+                            .assign_task_to_agent(payload.task_id, &payload.agent_id);
+
+                        self.broadcast_event(
+                            "task.assigned",
+                            json!({
+                                "task_id": payload.task_id.to_string(),
+                                "agent_id": payload.agent_id,
+                            }),
+                        )
+                        .await;
+
+                        match Envelope::new(
+                            MSG_CLI_RESPONSE,
+                            json!({
+                                "assigned": payload.task_id.to_string(),
+                                "agent_id": payload.agent_id,
+                            }),
+                        ) {
+                            Ok(mut e) => {
+                                e.correlation_id = correlation_id;
+                                e
+                            }
+                            Err(_) => cli_error(correlation_id, "failed to build response"),
+                        }
+                    }
+                    Err(e) => cli_error(correlation_id, &format!("invalid payload: {e}")),
+                }
+            }
+
+            MSG_CLI_SPAWN => {
+                match env.decode_payload::<CliSpawn>() {
+                    Ok(payload) => self.handle_spawn(correlation_id, payload).await,
+                    Err(e) => cli_error(correlation_id, &format!("invalid payload: {e}")),
+                }
+            }
+
+            MSG_CLI_KILL => {
+                match env.decode_payload::<CliKill>() {
+                    Ok(payload) => {
+                        // Try to kill the child process
+                        let killed_child = {
+                            let mut spawned = self.spawned.lock().await;
+                            if let Some(mut child) = spawned.remove(&payload.instance) {
+                                // Send SIGTERM
+                                let _ = child.kill();
+                                true
+                            } else {
+                                false
+                            }
+                        };
+
+                        // Also kill the tmux session
+                        let tmux_session = format!("vaelkor-{}", payload.instance);
+                        let _ = std::process::Command::new("tmux")
+                            .args(["kill-session", "-t", &tmux_session])
+                            .output();
+
+                        let msg = if killed_child {
+                            format!("killed process and tmux session for {}", payload.instance)
+                        } else {
+                            format!("killed tmux session for {} (no tracked child)", payload.instance)
+                        };
+
+                        info!(instance = %payload.instance, "{msg}");
+
+                        match Envelope::new(MSG_CLI_RESPONSE, json!({"killed": payload.instance, "message": msg})) {
+                            Ok(mut e) => {
+                                e.correlation_id = correlation_id;
+                                e
+                            }
+                            Err(_) => cli_error(correlation_id, "failed to build response"),
+                        }
+                    }
+                    Err(e) => cli_error(correlation_id, &format!("invalid payload: {e}")),
+                }
+            }
+
+            MSG_CLI_PROJECT_LIST => {
+                match project::list_profiles() {
+                    Ok(profiles) => {
+                        let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+                        match Envelope::new(MSG_CLI_RESPONSE, json!({"projects": names})) {
+                            Ok(mut e) => {
+                                e.correlation_id = correlation_id;
+                                e
+                            }
+                            Err(_) => cli_error(correlation_id, "failed to build response"),
+                        }
+                    }
+                    Err(e) => cli_error(correlation_id, &format!("failed to list projects: {e}")),
+                }
+            }
+
+            MSG_CLI_PROJECT_GET => {
+                match env.decode_payload::<CliProjectGet>() {
+                    Ok(payload) => match project::load_profile(&payload.name) {
+                        Ok(Some(profile)) => {
+                            match Envelope::new(MSG_CLI_RESPONSE, json!({"project": profile})) {
+                                Ok(mut e) => {
+                                    e.correlation_id = correlation_id;
+                                    e
+                                }
+                                Err(_) => cli_error(correlation_id, "failed to serialize project"),
+                            }
+                        }
+                        Ok(None) => cli_error(
+                            correlation_id,
+                            &format!("project '{}' not found", payload.name),
+                        ),
+                        Err(e) => cli_error(
+                            correlation_id,
+                            &format!("failed to load project: {e}"),
+                        ),
+                    },
+                    Err(e) => cli_error(correlation_id, &format!("invalid payload: {e}")),
+                }
+            }
+
+            MSG_CLI_PROJECT_SAVE => {
+                match env.decode_payload::<CliProjectSave>() {
+                    Ok(payload) => {
+                        let mut profile = project::ProjectProfile::new(&payload.name);
+                        if let Some(desc) = payload.description {
+                            profile.description = desc;
+                        }
+                        if let Some(root) = payload.root_dir {
+                            profile.root_dir = Some(root);
+                        }
+                        if let Some(stack) = payload.stack {
+                            profile.stack = stack;
+                        }
+                        match project::save_profile(&profile) {
+                            Ok(_path) => {
+                                match Envelope::new(
+                                    MSG_CLI_RESPONSE,
+                                    json!({"saved": payload.name}),
+                                ) {
+                                    Ok(mut e) => {
+                                        e.correlation_id = correlation_id;
+                                        e
+                                    }
+                                    Err(_) => {
+                                        cli_error(correlation_id, "failed to build response")
+                                    }
+                                }
+                            }
+                            Err(e) => cli_error(
+                                correlation_id,
+                                &format!("failed to save project: {e}"),
+                            ),
+                        }
+                    }
+                    Err(e) => cli_error(correlation_id, &format!("invalid payload: {e}")),
+                }
+            }
+
+            other => cli_error(correlation_id, &format!("unknown CLI command: {other}")),
+        }
+    }
+
+    /// Handle a cli.spawn request.
+    async fn handle_spawn(&self, correlation_id: Uuid, payload: CliSpawn) -> Envelope {
+        // Find config for this agent
+        let config = self
+            .agent_configs
+            .iter()
+            .find(|(id, _)| id == &payload.agent)
+            .map(|(_, cfg)| cfg.clone());
+
+        let config = match config {
+            Some(c) => c,
+            None => {
+                return cli_error(
+                    correlation_id,
+                    &format!("no config found for agent '{}'", payload.agent),
+                )
+            }
+        };
+
+        // Find wrapper binary
+        let wrapper_bin = match crate::daemon::config::find_wrapper_binary() {
+            Ok(bin) => bin,
+            Err(e) => {
+                return cli_error(
+                    correlation_id,
+                    &format!("wrapper binary not found: {e}"),
+                )
+            }
+        };
+
+        let mut cmd = std::process::Command::new(&wrapper_bin);
+        cmd.arg(&payload.agent);
+
+        if !config.command.is_empty() {
+            cmd.arg("--command").arg(config.command.join(" "));
+        }
+
+        if let Some(ref wd) = config.working_dir {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            let expanded = if wd.starts_with('~') {
+                std::path::PathBuf::from(&home)
+                    .join(wd.strip_prefix("~/").unwrap_or(&wd[1..]))
+            } else {
+                std::path::PathBuf::from(wd)
+            };
+            cmd.arg("--workdir").arg(expanded);
+        }
+
+        if let Some(ref sf) = config.startup_file {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            let expanded = if sf.starts_with('~') {
+                std::path::PathBuf::from(&home)
+                    .join(sf.strip_prefix("~/").unwrap_or(&sf[1..]))
+            } else {
+                std::path::PathBuf::from(sf)
+            };
+            cmd.arg("--startup-file").arg(expanded);
+        }
+
+        match cmd
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+        {
+            Ok(child) => {
+                let pid = child.id();
+                info!(agent = %payload.agent, pid, "agent spawned via CLI");
+                {
+                    let mut spawned = self.spawned.lock().await;
+                    spawned.insert(payload.agent.clone(), child);
+                }
+                self.broadcast_event(
+                    "agent.spawned",
+                    json!({"agent": &payload.agent, "pid": pid}),
+                )
+                .await;
+                match Envelope::new(
+                    MSG_CLI_RESPONSE,
+                    json!({"spawned": &payload.agent, "pid": pid}),
+                ) {
+                    Ok(mut e) => {
+                        e.correlation_id = correlation_id;
+                        e
+                    }
+                    Err(_) => cli_error(correlation_id, "failed to build response"),
+                }
+            }
+            Err(e) => cli_error(
+                correlation_id,
+                &format!("failed to spawn {}: {e}", payload.agent),
+            ),
+        }
+    }
+
+    /// Broadcast an event to all event stream subscribers.
+    async fn broadcast_event(&self, event_type: &str, data: serde_json::Value) {
+        let event = match Envelope::new(
+            MSG_EVENT,
+            serde_json::json!({
+                "event": event_type,
+                "data": data,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
+        ) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let mut line = match serde_json::to_string(&event) {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        line.push('\n');
+        let bytes = line.as_bytes();
+
+        let mut subs = self.event_subscribers.lock().await;
+        let mut dead = Vec::new();
+        for (i, writer) in subs.iter_mut().enumerate() {
+            if writer.write_all(bytes).await.is_err() {
+                dead.push(i);
+            }
+        }
+        // Remove dead subscribers in reverse order
+        for i in dead.into_iter().rev() {
+            subs.swap_remove(i);
         }
     }
 
@@ -218,5 +801,13 @@ impl SocketServer {
     /// List all connected agent IDs.
     pub async fn connected_agents(&self) -> Vec<String> {
         self.writers.lock().await.keys().cloned().collect()
+    }
+}
+
+fn cli_error(correlation_id: Uuid, message: &str) -> Envelope {
+    Envelope {
+        kind: MSG_CLI_ERROR.to_string(),
+        correlation_id,
+        payload: serde_json::json!({"error": message}),
     }
 }

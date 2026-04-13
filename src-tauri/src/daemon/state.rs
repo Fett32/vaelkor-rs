@@ -94,6 +94,14 @@ pub struct Task {
     pub assigned_to: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub parent_task_id: Option<Uuid>,
+    #[serde(default)]
+    pub subtask_order: u32,
+    #[serde(default)]
+    pub user_intervened: bool,
+    #[serde(default)]
+    pub user_intervened_at: Option<DateTime<Utc>>,
 }
 
 impl Task {
@@ -107,6 +115,10 @@ impl Task {
             assigned_to: None,
             created_at: now,
             updated_at: now,
+            parent_task_id: None,
+            subtask_order: 0,
+            user_intervened: false,
+            user_intervened_at: None,
         }
     }
 
@@ -321,6 +333,56 @@ impl AppState {
         self.save();
         self.emit_event("tasks-changed");
         Ok(result)
+    }
+
+    /// Return all subtasks of the given parent, sorted by `subtask_order`.
+    pub fn get_subtasks(&self, parent_id: Uuid) -> Vec<Task> {
+        let s = self.inner.lock();
+        let mut subs: Vec<Task> = s
+            .tasks
+            .values()
+            .filter(|t| t.parent_task_id == Some(parent_id))
+            .cloned()
+            .collect();
+        subs.sort_by_key(|t| t.subtask_order);
+        subs
+    }
+
+    /// Returns `true` if every subtask of `parent_id` is in a terminal state.
+    /// Also returns `true` if there are no subtasks at all.
+    pub fn all_subtasks_done(&self, parent_id: Uuid) -> bool {
+        let s = self.inner.lock();
+        s.tasks
+            .values()
+            .filter(|t| t.parent_task_id == Some(parent_id))
+            .all(|t| t.state.is_terminal())
+    }
+
+    /// Mark any Running/Accepted task assigned to `agent_id` as user-intervened.
+    pub fn record_user_intervention(&self, agent_id: &str) {
+        let mut s = self.inner.lock();
+        let now = Utc::now();
+        let mut changed = false;
+        for task in s.tasks.values_mut() {
+            if task.assigned_to.as_deref() == Some(agent_id)
+                && matches!(task.state, TaskState::Accepted)
+            {
+                task.user_intervened = true;
+                task.user_intervened_at = Some(now);
+                task.updated_at = now;
+                changed = true;
+                tracing::info!(
+                    task_id = %task.id,
+                    agent_id,
+                    "recorded user intervention on task"
+                );
+            }
+        }
+        drop(s);
+        if changed {
+            self.save();
+            self.emit_event("tasks-changed");
+        }
     }
 
     // --- agents --------------------------------------------------------------

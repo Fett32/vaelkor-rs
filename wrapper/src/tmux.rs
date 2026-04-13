@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 /// Returns true if a tmux session with this name currently exists.
 pub fn session_exists(name: &str) -> bool {
@@ -27,6 +29,42 @@ pub fn create_session(name: &str, command: &str) -> Result<()> {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    Ok(())
+}
+
+/// Create a new detached tmux session running `command` in an optional working directory.
+/// After creation, disables paste detection by setting assume-paste-time to 0.
+pub fn create_session_with_dir(name: &str, command: &str, workdir: Option<&str>) -> Result<()> {
+    let args: Vec<&str> = command.split_whitespace().collect();
+    let mut cmd = Command::new("tmux");
+    cmd.args(["new-session", "-d", "-s", name]);
+    if let Some(dir) = workdir {
+        cmd.args(["-c", dir]);
+    }
+    if !args.is_empty() {
+        cmd.arg("--");
+        cmd.args(&args);
+    }
+    let out = cmd.output().context("failed to spawn tmux")?;
+    if !out.status.success() {
+        bail!(
+            "tmux new-session failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // Disable paste detection so injected text is not throttled.
+    let out = Command::new("tmux")
+        .args(["set-option", "-t", name, "assume-paste-time", "0"])
+        .output()
+        .context("failed to set assume-paste-time")?;
+    if !out.status.success() {
+        bail!(
+            "tmux set-option assume-paste-time failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     Ok(())
 }
 
@@ -58,6 +96,9 @@ pub fn send_keys(name: &str, text: &str) -> Result<()> {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+
+    // Wait for the agent to process the pasted text before pressing Enter.
+    thread::sleep(Duration::from_millis(500));
 
     // Now send Enter as a key name (not literal).
     let out = Command::new("tmux")

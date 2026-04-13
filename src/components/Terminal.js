@@ -92,6 +92,7 @@ function createTerminal() {
     lineHeight: 1.4,
     cursorBlink: true,
     allowProposedApi: true,
+    scrollback: 10000,
   });
 
   if (FitAddon) {
@@ -102,9 +103,47 @@ function createTerminal() {
   term.open($container);
   if (fitAddon) fitAddon.fit();
 
-  // User input → PTY via Rust backend.
+  // -----------------------------------------------------------------------
+  // Clipboard: Ctrl+Shift+C to copy, Ctrl+Shift+V to paste.
+  // Tauri webview doesn't wire up terminal clipboard by default, so we
+  // intercept the key combos before xterm.js processes them.
+  // -----------------------------------------------------------------------
+  term.attachCustomKeyEventHandler((event) => {
+    if (event.type !== "keydown") return true;
+
+    // Ctrl+Shift+C → copy selection to clipboard
+    if (event.ctrlKey && event.shiftKey && event.code === "KeyC") {
+      const selection = term.select?.getSelection?.() ?? term.getSelection?.();
+      if (selection) {
+        navigator.clipboard.writeText(selection).catch(() => {});
+      }
+      return false;
+    }
+
+    // Ctrl+Shift+V → paste from clipboard into PTY
+    if (event.ctrlKey && event.shiftKey && event.code === "KeyV") {
+      navigator.clipboard.readText().then((text) => {
+        if (text) {
+          invoke("terminal_send_keys", { keys: text }).catch(() => {});
+        }
+      }).catch(() => {});
+      return false;
+    }
+
+    return true;
+  });
+
+  // -----------------------------------------------------------------------
+  // Key send queue — serialise IPC calls so rapid keypresses are never
+  // reordered by the async Tauri bridge. Each send waits for the previous
+  // one to complete before writing to the PTY.
+  // -----------------------------------------------------------------------
+  let sendQueue = Promise.resolve();
+
   term.onData((data) => {
-    invoke("terminal_send_keys", { keys: data }).catch((e) => {
+    sendQueue = sendQueue.then(() =>
+      invoke("terminal_send_keys", { keys: data })
+    ).catch((e) => {
       console.warn("[Terminal] send_keys failed:", e);
     });
   });
