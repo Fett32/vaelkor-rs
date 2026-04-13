@@ -84,13 +84,18 @@ pub fn run() {
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(300));
 
-                // Kill stale wrapper processes from previous daemon runs.
-                let _ = std::process::Command::new("pkill")
-                    .args(["-f", "vaelkor-wrapper"])
-                    .output();
+                // Kill stale wrapper processes from previous daemon runs
+                // using tracked PIDs (not system-wide pkill).
+                daemon::session::kill_stale_wrappers();
                 std::thread::sleep(std::time::Duration::from_millis(200));
 
                 let mut children = daemon::config::launch_wrappers(&configs_for_launch);
+
+                // Record child PIDs so next daemon startup can kill them.
+                let pids: Vec<u32> = children.iter().map(|(_, c)| c.id()).collect();
+                if let Err(e) = daemon::session::save_wrapper_pids(&pids) {
+                    tracing::warn!("failed to save wrapper PIDs: {e}");
+                }
 
                 // Keep children alive until the process exits, then clean up.
                 // This thread just waits — when the main process exits, the

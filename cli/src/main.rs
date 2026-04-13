@@ -134,13 +134,13 @@ struct TaskListResponsePayload {
 
 #[derive(Deserialize)]
 struct SpawnResponsePayload {
-    instance: String,
+    spawned: String,
     pid: u32,
 }
 
 #[derive(Deserialize)]
 struct ErrorResponsePayload {
-    message: String,
+    error: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +253,16 @@ enum TaskAction {
 // Daemon communication
 // ---------------------------------------------------------------------------
 
+/// Send timeout for CLI requests (30 seconds).
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn send_request(envelope: &Envelope) -> Result<Envelope> {
+    tokio::time::timeout(REQUEST_TIMEOUT, send_request_inner(envelope))
+        .await
+        .map_err(|_| anyhow::anyhow!("request timed out after {}s", REQUEST_TIMEOUT.as_secs()))?
+}
+
+async fn send_request_inner(envelope: &Envelope) -> Result<Envelope> {
     let stream = UnixStream::connect(DAEMON_SOCKET)
         .await
         .context("failed to connect to daemon — is vaelkor running?")?;
@@ -288,7 +297,7 @@ async fn cmd_status() -> Result<()> {
 
     if resp.kind == "cli.error" {
         let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
-        eprintln!("error: {}", err.message);
+        eprintln!("error: {}", err.error);
         std::process::exit(1);
     }
 
@@ -322,7 +331,7 @@ async fn cmd_task_list() -> Result<()> {
 
     if resp.kind == "cli.error" {
         let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
-        eprintln!("error: {}", err.message);
+        eprintln!("error: {}", err.error);
         std::process::exit(1);
     }
 
@@ -347,7 +356,7 @@ async fn cmd_task_get(task_id: Uuid) -> Result<()> {
 
     if resp.kind == "cli.error" {
         let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
-        eprintln!("error: {}", err.message);
+        eprintln!("error: {}", err.error);
         std::process::exit(1);
     }
 
@@ -369,12 +378,14 @@ async fn cmd_task_create(title: String, description: String) -> Result<()> {
 
     if resp.kind == "cli.error" {
         let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
-        eprintln!("error: {}", err.message);
+        eprintln!("error: {}", err.error);
         std::process::exit(1);
     }
 
-    let info: TaskResponsePayload = serde_json::from_value(resp.payload)?;
-    println!("Created task: {}", info.task.id);
+    let task_id = resp.payload.get("task_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    println!("Created task: {}", task_id);
 
     Ok(())
 }
@@ -385,7 +396,7 @@ async fn cmd_task_cancel(task_id: Uuid) -> Result<()> {
 
     if resp.kind == "cli.error" {
         let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
-        eprintln!("error: {}", err.message);
+        eprintln!("error: {}", err.error);
         std::process::exit(1);
     }
 
@@ -400,7 +411,7 @@ async fn cmd_assign(task_id: Uuid, agent_id: String) -> Result<()> {
 
     if resp.kind == "cli.error" {
         let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
-        eprintln!("error: {}", err.message);
+        eprintln!("error: {}", err.error);
         std::process::exit(1);
     }
 
@@ -415,7 +426,7 @@ async fn cmd_project_list() -> Result<()> {
 
     if resp.kind == "cli.error" {
         let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
-        eprintln!("error: {}", err.message);
+        eprintln!("error: {}", err.error);
         std::process::exit(1);
     }
 
@@ -430,10 +441,8 @@ async fn cmd_project_list() -> Result<()> {
     }
 
     for p in &projects {
-        let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-        let desc = p.get("description").and_then(|v| v.as_str()).unwrap_or("");
-        let root = p.get("root_dir").and_then(|v| v.as_str()).unwrap_or("-");
-        println!("  {} — {} ({})", name, desc, root);
+        let name = p.as_str().unwrap_or("?");
+        println!("  {}", name);
     }
 
     Ok(())
@@ -445,7 +454,7 @@ async fn cmd_project_get(name: String) -> Result<()> {
 
     if resp.kind == "cli.error" {
         let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
-        eprintln!("error: {}", err.message);
+        eprintln!("error: {}", err.error);
         std::process::exit(1);
     }
 
@@ -474,7 +483,7 @@ async fn cmd_project_save(
 
     if resp.kind == "cli.error" {
         let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
-        eprintln!("error: {}", err.message);
+        eprintln!("error: {}", err.error);
         std::process::exit(1);
     }
 
@@ -520,12 +529,12 @@ async fn cmd_spawn(agent: String, role: String) -> Result<()> {
 
     if resp.kind == "cli.error" {
         let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
-        eprintln!("error: {}", err.message);
+        eprintln!("error: {}", err.error);
         std::process::exit(1);
     }
 
     let info: SpawnResponsePayload = serde_json::from_value(resp.payload)?;
-    println!("Spawned instance: {} (pid {})", info.instance, info.pid);
+    println!("Spawned instance: {} (pid {})", info.spawned, info.pid);
 
     Ok(())
 }
@@ -536,7 +545,7 @@ async fn cmd_kill(instance: String) -> Result<()> {
 
     if resp.kind == "cli.error" {
         let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
-        eprintln!("error: {}", err.message);
+        eprintln!("error: {}", err.error);
         std::process::exit(1);
     }
 

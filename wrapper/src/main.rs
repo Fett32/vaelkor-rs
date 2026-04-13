@@ -236,8 +236,11 @@ async fn main() -> Result<()> {
     // Give the agent a moment to render its first prompt before polling.
     sleep(Duration::from_millis(1500)).await;
 
+    // State persists across reconnects so the daemon can be re-informed.
+    let mut state = AgentState::Idle;
+
     loop {
-        let exit_reason = run_loop(&agent, &session, &detector, &mut client).await?;
+        let exit_reason = run_loop(&agent, &session, &detector, &mut client, &mut state).await?;
 
         match exit_reason {
             ExitReason::Shutdown => {
@@ -247,7 +250,25 @@ async fn main() -> Result<()> {
             ExitReason::Disconnected => {
                 warn!("lost daemon connection, reconnecting...");
                 client = connect_with_backoff(&agent).await;
-                // Successfully reconnected — resume the run loop.
+
+                // Re-report active task to daemon after reconnect.
+                if let AgentState::Running { task_id } = &state {
+                    info!(task_id = %task_id, "re-reporting active task after reconnect");
+                    let status_env = Envelope::new(
+                        MSG_STATUS_RESPONSE,
+                        StatusResponse {
+                            agent_id: agent.clone(),
+                            task_id: Some(*task_id),
+                            alive: true,
+                            details: Some("running (reconnected)".to_owned()),
+                        },
+                    );
+                    if let Ok(env) = status_env {
+                        if let Err(e) = client.send(&env).await {
+                            warn!("failed to re-report task: {e:#}");
+                        }
+                    }
+                }
             }
         }
     }
@@ -262,8 +283,8 @@ async fn run_loop(
     session: &str,
     detector: &IdleDetector,
     client: &mut client::DaemonClient,
+    state: &mut AgentState,
 ) -> Result<ExitReason> {
-    let mut state = AgentState::Idle;
     let mut idle_since: Option<Instant> = None;
 
     // User intervention detection state.
@@ -281,7 +302,7 @@ async fn run_loop(
                             envelope,
                             agent,
                             session,
-                            &mut state,
+                            state,
                             client,
                             &mut last_injection,
                         )
@@ -350,7 +371,7 @@ async fn run_loop(
                                 stable_for = format!("{elapsed:.1}s"),
                                 "idle pattern stable, task complete"
                             );
-                            state = AgentState::Idle;
+                            *state = AgentState::Idle;
                             idle_since = None;
                             let complete_env = Envelope::new(
                                 MSG_TASK_COMPLETE,
@@ -393,8 +414,13 @@ async fn handle_envelope(
             info!(task_id = %task.task_id, title = %task.title, "received task");
 
             // Inject the prompt into the tmux session FIRST.
+            // Run in spawn_blocking since send_keys does blocking I/O + sleep.
             let prompt = format!("{}\n{}", task.title, task.description);
-            match tmux::send_keys(session, &prompt) {
+            let session_owned = session.to_string();
+            let inject_result = tokio::task::spawn_blocking(move || {
+                tmux::send_keys(&session_owned, &prompt)
+            }).await.context("send_keys task panicked")?;
+            match inject_result {
                 Ok(()) => {
                     *last_injection = Some(Instant::now());
                     // Only send accept AFTER successful injection.

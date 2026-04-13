@@ -15,6 +15,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TaskState {
+    /// Task created but not yet assigned to any agent.
+    Pending,
     /// Orchestrator has created the task and nominated an agent.
     Assigned,
     /// Agent has acknowledged and begun work.
@@ -57,7 +59,9 @@ impl TaskState {
         use TaskState::*;
         matches!(
             (self, next),
-            (Assigned, Accepted)
+            (Pending, Assigned)
+                | (Pending, Cancelled)
+                | (Assigned, Accepted)
                 | (Assigned, Rejected)
                 | (Assigned, Cancelled)
                 | (Assigned, Stale)
@@ -111,7 +115,7 @@ impl Task {
             id: Uuid::new_v4(),
             title: title.into(),
             description: description.into(),
-            state: TaskState::Assigned,
+            state: TaskState::Pending,
             assigned_to: None,
             created_at: now,
             updated_at: now,
@@ -266,18 +270,29 @@ impl AppState {
     }
 
     /// Persist current state to disk. Called automatically after mutations.
+    /// Clones data under the lock, then writes outside the lock using
+    /// atomic rename to prevent corruption.
     fn save(&self) {
         if let Some(path) = self.save_path.as_ref() {
-            let s = self.inner.lock();
-            match serde_json::to_string_pretty(&*s) {
-                Ok(json) => {
-                    if let Err(e) = std::fs::write(path, json) {
-                        tracing::warn!("failed to save session: {e}");
+            // Clone data under lock, then release immediately.
+            let json = {
+                let s = self.inner.lock();
+                match serde_json::to_string_pretty(&*s) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        tracing::warn!("failed to serialize session: {e}");
+                        return;
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("failed to serialize session: {e}");
-                }
+            };
+            // Write to temp file then atomic rename.
+            let tmp_path = path.with_extension("json.tmp");
+            if let Err(e) = std::fs::write(&tmp_path, &json) {
+                tracing::warn!("failed to write temp session file: {e}");
+                return;
+            }
+            if let Err(e) = std::fs::rename(&tmp_path, path) {
+                tracing::warn!("failed to rename session file: {e}");
             }
         }
     }
@@ -326,6 +341,17 @@ impl AppState {
             .tasks
             .get_mut(&task_id)
             .ok_or_else(|| anyhow::anyhow!("task {} not found", task_id))?;
+
+        // Transition Pending → Assigned if needed (audit #8: verify state).
+        if task.state == TaskState::Pending {
+            task.transition(TaskState::Assigned)?;
+        } else if task.state != TaskState::Assigned {
+            anyhow::bail!(
+                "cannot assign task {} in state {:?}",
+                task_id, task.state
+            );
+        }
+
         task.assigned_to = Some(agent_id.to_string());
         task.updated_at = Utc::now();
         let result = task.clone();

@@ -51,6 +51,14 @@ pub fn ensure_dirs() -> anyhow::Result<()> {
         .with_context(|| format!("create {}", data.display()))?;
     std::fs::create_dir_all(&sockets)
         .with_context(|| format!("create {}", sockets.display()))?;
+    // Restrict socket dir to current user only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o700);
+        std::fs::set_permissions(&sockets, perms)
+            .with_context(|| format!("chmod 0700 {}", sockets.display()))?;
+    }
 
     tracing::debug!(
         config = %config.display(),
@@ -87,6 +95,67 @@ impl SessionInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Wrapper PID tracking
+// ---------------------------------------------------------------------------
+
+/// Path to the file that records PIDs of wrapper processes we launched.
+pub fn wrapper_pids_file() -> anyhow::Result<PathBuf> {
+    Ok(data_dir()?.join("wrapper_pids.json"))
+}
+
+/// Save wrapper PIDs to disk so we can kill exactly these on restart.
+pub fn save_wrapper_pids(pids: &[u32]) -> anyhow::Result<()> {
+    let path = wrapper_pids_file()?;
+    let json = serde_json::to_string(pids)?;
+    std::fs::write(&path, json)
+        .with_context(|| format!("write wrapper pids {}", path.display()))?;
+    Ok(())
+}
+
+/// Load and kill stale wrapper PIDs from a previous daemon run.
+/// Removes the PID file afterward.
+pub fn kill_stale_wrappers() {
+    let path = match wrapper_pids_file() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    if !path.exists() {
+        return;
+    }
+
+    match std::fs::read_to_string(&path) {
+        Ok(json) => {
+            if let Ok(pids) = serde_json::from_str::<Vec<u32>>(&json) {
+                for pid in &pids {
+                    // Only kill if the process is actually a vaelkor-wrapper.
+                    // SIGTERM (15) gives it a chance to clean up.
+                    let cmdline_path = format!("/proc/{pid}/cmdline");
+                    if let Ok(cmdline) = std::fs::read_to_string(&cmdline_path) {
+                        if cmdline.contains("vaelkor-wrapper") {
+                            tracing::info!(pid, "killing stale wrapper");
+                            let _ = std::process::Command::new("kill")
+                                .args(["-TERM", &pid.to_string()])
+                                .output();
+                        } else {
+                            tracing::debug!(pid, "PID no longer a wrapper, skipping");
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("failed to read wrapper pids file: {e}");
+        }
+    }
+
+    // Remove the stale file.
+    let _ = std::fs::remove_file(&path);
+}
+
+impl SessionInfo {
 
     pub fn write(&self) -> anyhow::Result<()> {
         let path = session_file()?;

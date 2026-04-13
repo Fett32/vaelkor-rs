@@ -175,6 +175,14 @@ impl SocketServer {
             .context("decode WrapperRegister")?;
         let agent_id = reg.agent_id.clone();
 
+        // Validate agent ID: alphanumeric, dashes, underscores only (max 64 chars).
+        if agent_id.is_empty()
+            || agent_id.len() > 64
+            || !agent_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            anyhow::bail!("invalid agent_id: {agent_id:?}");
+        }
+
         info!(agent_id = %agent_id, "wrapper registered");
 
         // Store the write half, replacing any existing connection
@@ -276,21 +284,48 @@ impl SocketServer {
                     )
                     .await;
 
-                    // Notify orchestrator by injecting into its tmux session.
+                    // Notify orchestrator by injecting into its tmux session,
+                    // but only if the session appears idle (at a prompt).
                     let agent_id_owned = agent_id.to_string();
                     let notify_msg = format!(
                         "[Vaelkor] Task completed by {}: \"{}\" ({})",
                         agent_id_owned, task_title, &payload.task_id.to_string()[..8]
                     );
                     tokio::spawn(async move {
-                        let _ = tokio::process::Command::new("tmux")
-                            .args(["send-keys", "-t", "vaelkor-orchestrator", "-l", &notify_msg])
+                        // Check if orchestrator is at a prompt before injecting.
+                        let capture = tokio::process::Command::new("tmux")
+                            .args(["capture-pane", "-p", "-t", "vaelkor-orchestrator", "-S", "-3"])
                             .output()
                             .await;
-                        let _ = tokio::process::Command::new("tmux")
-                            .args(["send-keys", "-t", "vaelkor-orchestrator", "Enter"])
-                            .output()
-                            .await;
+                        let is_idle = match capture {
+                            Ok(out) if out.status.success() => {
+                                let text = String::from_utf8_lossy(&out.stdout);
+                                let last_line = text.lines()
+                                    .rev()
+                                    .find(|l| !l.trim().is_empty())
+                                    .unwrap_or("");
+                                // Claude Code shows ">" or "$" when idle at prompt.
+                                last_line.trim().ends_with('>')
+                                    || last_line.trim().ends_with('$')
+                                    || last_line.trim().ends_with('%')
+                            }
+                            _ => false,
+                        };
+
+                        if is_idle {
+                            let _ = tokio::process::Command::new("tmux")
+                                .args(["send-keys", "-t", "vaelkor-orchestrator", "-l", &notify_msg])
+                                .output()
+                                .await;
+                            let _ = tokio::process::Command::new("tmux")
+                                .args(["send-keys", "-t", "vaelkor-orchestrator", "Enter"])
+                                .output()
+                                .await;
+                        } else {
+                            tracing::info!(
+                                "orchestrator busy, skipping tmux injection for: {notify_msg}"
+                            );
+                        }
                     });
                 }
             }
@@ -463,16 +498,7 @@ impl SocketServer {
             MSG_CLI_ASSIGN => {
                 match env.decode_payload::<CliAssign>() {
                     Ok(payload) => {
-                        // Check agent is connected
-                        let connected = self.writers.lock().await.contains_key(&payload.agent_id);
-                        if !connected {
-                            return cli_error(
-                                correlation_id,
-                                &format!("agent {} is not connected", payload.agent_id),
-                            );
-                        }
-
-                        // Look up task
+                        // Look up task first (no lock contention).
                         let task = match self.app_state.get_task(payload.task_id) {
                             Some(t) => t,
                             None => {
@@ -483,7 +509,7 @@ impl SocketServer {
                             }
                         };
 
-                        // Build and send TaskAssign envelope to the agent
+                        // Build the envelope before locking writers.
                         let assign_env = match Envelope::new(
                             MSG_TASK_ASSIGN,
                             TaskAssign {
@@ -502,17 +528,48 @@ impl SocketServer {
                             }
                         };
 
-                        if let Err(e) = self.send_to(&payload.agent_id, &assign_env).await {
-                            return cli_error(
-                                correlation_id,
-                                &format!("failed to send to agent: {e}"),
-                            );
+                        // Hold the writers lock through the send to avoid
+                        // check-then-act race (agent disconnects between check and send).
+                        {
+                            let mut writers = self.writers.lock().await;
+                            let writer = match writers.get_mut(&payload.agent_id) {
+                                Some(w) => w,
+                                None => {
+                                    return cli_error(
+                                        correlation_id,
+                                        &format!("agent {} is not connected", payload.agent_id),
+                                    );
+                                }
+                            };
+                            let mut line = match serde_json::to_string(&assign_env) {
+                                Ok(l) => l,
+                                Err(e) => {
+                                    return cli_error(
+                                        correlation_id,
+                                        &format!("failed to serialize: {e}"),
+                                    );
+                                }
+                            };
+                            line.push('\n');
+                            if let Err(e) = writer.write_all(line.as_bytes()).await {
+                                return cli_error(
+                                    correlation_id,
+                                    &format!("failed to send to agent: {e}"),
+                                );
+                            }
+                            let _ = writer.flush().await;
                         }
 
-                        // Update task assignment
-                        let _ = self
+                        // Update task assignment.
+                        if let Err(e) = self
                             .app_state
-                            .assign_task_to_agent(payload.task_id, &payload.agent_id);
+                            .assign_task_to_agent(payload.task_id, &payload.agent_id)
+                        {
+                            return cli_error(
+                                correlation_id,
+                                &format!("failed to update task state: {e}"),
+                            );
+                        }
 
                         self.broadcast_event(
                             "task.assigned",
