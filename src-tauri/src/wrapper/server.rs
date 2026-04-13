@@ -15,12 +15,12 @@ use crate::daemon::state::{AppState, Task, TaskState};
 use crate::terminal::pane_manager::PaneManager;
 use crate::wrapper::protocol::{
     CliAssign, CliKill, CliProjectGet, CliProjectSave, CliSpawn, CliTaskCancel, CliTaskCreate,
-    CliTaskGet, DaemonShutdown, Envelope, TaskAccept, TaskAssign, TaskBlocked, TaskComplete,
+    CliTaskGet, Envelope, TaskAccept, TaskAssign, TaskBlocked, TaskComplete,
     UserIntervention, WrapperError, WrapperRegister, MSG_CLI_ASSIGN, MSG_CLI_ERROR,
     MSG_CLI_EVENT_STREAM, MSG_CLI_KILL, MSG_CLI_PROJECT_GET, MSG_CLI_PROJECT_LIST,
     MSG_CLI_PROJECT_SAVE, MSG_CLI_RESPONSE, MSG_CLI_SPAWN, MSG_CLI_STATUS, MSG_CLI_TASK_CANCEL,
     MSG_CLI_TASK_CREATE, MSG_CLI_TASK_GET, MSG_CLI_TASK_LIST, MSG_ERROR, MSG_EVENT, MSG_REGISTER,
-    MSG_SHUTDOWN, MSG_STATUS_RESPONSE, MSG_TASK_ACCEPT, MSG_TASK_ASSIGN, MSG_TASK_BLOCKED,
+    MSG_STATUS_RESPONSE, MSG_TASK_ACCEPT, MSG_TASK_ASSIGN, MSG_TASK_BLOCKED,
     MSG_TASK_COMPLETE, MSG_USER_INTERVENTION,
 };
 use anyhow::{Context, Result};
