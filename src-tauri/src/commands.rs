@@ -135,14 +135,10 @@ pub fn register_agent(
 // ---------------------------------------------------------------------------
 
 /// Return lightweight session metadata (started_at, pid, version).
+/// The SessionInfo is created once at startup and stored in Tauri managed state.
 #[tauri::command]
-pub fn get_session_info() -> Result<SessionInfo, String> {
-    let info = SessionInfo::current();
-    // Write to disk as a side effect so the file stays fresh.
-    if let Err(e) = info.write() {
-        tracing::warn!("failed to write session file: {e}");
-    }
-    Ok(info)
+pub fn get_session_info(info: State<'_, SessionInfo>) -> Result<SessionInfo, String> {
+    Ok(info.inner().clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +152,7 @@ pub async fn terminal_attach(
     bridge: State<'_, TerminalBridge>,
     agent_id: String,
 ) -> Result<String, String> {
-    if !bridge.session_exists(&agent_id) {
+    if !bridge.session_exists(&agent_id).await {
         return Err(format!("no tmux session for agent {agent_id}"));
     }
 
@@ -181,12 +177,12 @@ pub async fn terminal_detach(
 
 /// Send keystrokes to an agent's terminal.
 #[tauri::command]
-pub fn terminal_send_keys(
+pub async fn terminal_send_keys(
     bridge: State<'_, TerminalBridge>,
     agent_id: String,
     keys: String,
 ) -> Result<(), String> {
-    bridge.send_keys(&agent_id, &keys).map_err(err)
+    bridge.send_keys(&agent_id, &keys).await.map_err(err)
 }
 
 /// Get current terminal content for an agent (one-shot, no streaming).
@@ -195,5 +191,5 @@ pub async fn terminal_capture(
     bridge: State<'_, TerminalBridge>,
     agent_id: String,
 ) -> Result<String, String> {
-    bridge.capture_pane(&agent_id).map_err(err)
+    bridge.capture_pane(&agent_id).await.map_err(err)
 }

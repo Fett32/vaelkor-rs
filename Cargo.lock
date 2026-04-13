@@ -4214,6 +4214,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "directories",
+ "parking_lot",
  "serde",
  "serde_json",
  "tauri",

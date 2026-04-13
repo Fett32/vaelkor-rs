@@ -27,12 +27,17 @@ pub fn run() {
     let socket_server = SocketServer::new(app_state.clone());
     let terminal_bridge = TerminalBridge::new();
     let terminal_bridge_clone = terminal_bridge.clone();
+    let session_info = daemon::session::SessionInfo::current();
+    if let Err(e) = session_info.write() {
+        tracing::warn!("failed to write session file: {e}");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(app_state.clone())
         .manage(socket_server.clone())
         .manage(terminal_bridge)
+        .manage(session_info)
         .setup(move |app| {
             // Spawn the socket server in the background
             let server = socket_server.clone();

@@ -21,6 +21,8 @@ const CAPTURE_LINES: usize = 50;
 const POLL_INTERVAL_MS: u64 = 500;
 /// Number of trailing lines to check for the idle pattern.
 const IDLE_TAIL: usize = 5;
+/// Idle pattern must be stable for this many seconds before marking complete.
+const IDLE_STABLE_SECS: f64 = 3.0;
 
 // ---- CLI args ---------------------------------------------------------------
 
@@ -96,6 +98,8 @@ async fn main() -> Result<()> {
 
     // Runtime state
     let mut state = AgentState::Idle;
+    /// Tracks when we first saw the idle pattern (for stability window).
+    let mut idle_since: Option<std::time::Instant> = None;
 
     // Give the agent a moment to render its first prompt before polling.
     sleep(Duration::from_millis(1500)).await;
@@ -114,6 +118,8 @@ async fn main() -> Result<()> {
                             &mut client,
                         )
                         .await?;
+                        // Reset idle timer on any daemon message (new task, etc).
+                        idle_since = None;
                         if !keep_running {
                             break;
                         }
@@ -139,17 +145,30 @@ async fn main() -> Result<()> {
             match tmux::capture_pane(&session, CAPTURE_LINES) {
                 Ok(lines) => {
                     if detector.is_idle_tail(&lines, IDLE_TAIL) {
-                        info!("idle pattern detected, task complete");
-                        state = AgentState::Idle;
-                        let complete_env = Envelope::new(
-                            MSG_TASK_COMPLETE,
-                            TaskComplete {
-                                task_id,
-                                summary: None,
-                                output: None,
-                            },
-                        )?;
-                        client.send(&complete_env).await?;
+                        let now = std::time::Instant::now();
+                        let first_seen = *idle_since.get_or_insert(now);
+                        let elapsed = now.duration_since(first_seen).as_secs_f64();
+
+                        if elapsed >= IDLE_STABLE_SECS {
+                            info!(
+                                stable_for = format!("{elapsed:.1}s"),
+                                "idle pattern stable, task complete"
+                            );
+                            state = AgentState::Idle;
+                            idle_since = None;
+                            let complete_env = Envelope::new(
+                                MSG_TASK_COMPLETE,
+                                TaskComplete {
+                                    task_id,
+                                    summary: None,
+                                    output: None,
+                                },
+                            )?;
+                            client.send(&complete_env).await?;
+                        }
+                    } else {
+                        // Output changed — reset the stability timer.
+                        idle_since = None;
                     }
                 }
                 Err(e) => {

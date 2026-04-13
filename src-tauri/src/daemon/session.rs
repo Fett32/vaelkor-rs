@@ -72,7 +72,7 @@ pub fn session_file() -> anyhow::Result<PathBuf> {
 }
 
 /// Lightweight metadata written to disk so the UI can show "last session" info.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub pid: u32,

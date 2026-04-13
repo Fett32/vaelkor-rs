@@ -11,8 +11,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::process::Command;
 use std::sync::Arc;
+use tokio::process::Command;
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -56,13 +56,14 @@ impl TerminalBridge {
     }
 
     /// Send keystrokes to an agent's tmux session.
-    pub fn send_keys(&self, agent_id: &str, keys: &str) -> Result<()> {
+    pub async fn send_keys(&self, agent_id: &str, keys: &str) -> Result<()> {
         let session = Self::session_name(agent_id);
         let target = format!("{}:0.0", session);
 
         let output = Command::new("tmux")
             .args(["send-keys", "-t", &target, "-l", keys])
             .output()
+            .await
             .context("tmux send-keys spawn failed")?;
 
         if !output.status.success() {
@@ -76,13 +77,14 @@ impl TerminalBridge {
     }
 
     /// Capture the current pane content.
-    pub fn capture_pane(&self, agent_id: &str) -> Result<String> {
+    pub async fn capture_pane(&self, agent_id: &str) -> Result<String> {
         let session = Self::session_name(agent_id);
         let target = format!("{}:0.0", session);
 
         let output = Command::new("tmux")
             .args(["capture-pane", "-t", &target, "-p", "-e"])
             .output()
+            .await
             .context("tmux capture-pane spawn failed")?;
 
         if !output.status.success() {
@@ -96,11 +98,12 @@ impl TerminalBridge {
     }
 
     /// Check if a session exists.
-    pub fn session_exists(&self, agent_id: &str) -> bool {
+    pub async fn session_exists(&self, agent_id: &str) -> bool {
         let session = Self::session_name(agent_id);
         Command::new("tmux")
             .args(["has-session", "-t", &session])
             .output()
+            .await
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
@@ -147,7 +150,7 @@ impl TerminalBridge {
             return None;
         }
 
-        let current = match self.capture_pane(agent_id) {
+        let current = match self.capture_pane(agent_id).await {
             Ok(c) => c,
             Err(_) => return None,
         };
@@ -167,6 +170,6 @@ impl TerminalBridge {
 
     /// Get the full current content (for initial load).
     pub async fn get_full_content(&self, agent_id: &str) -> Result<String> {
-        self.capture_pane(agent_id)
+        self.capture_pane(agent_id).await
     }
 }

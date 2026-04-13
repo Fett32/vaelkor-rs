@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -187,21 +187,21 @@ impl AppState {
     // --- tasks ---------------------------------------------------------------
 
     pub fn add_task(&self, task: Task) {
-        let mut s = self.inner.lock().unwrap();
+        let mut s = self.inner.lock();
         s.tasks.insert(task.id, task);
     }
 
     pub fn get_task(&self, id: Uuid) -> Option<Task> {
-        self.inner.lock().unwrap().tasks.get(&id).cloned()
+        self.inner.lock().tasks.get(&id).cloned()
     }
 
     pub fn all_tasks(&self) -> Vec<Task> {
-        self.inner.lock().unwrap().tasks.values().cloned().collect()
+        self.inner.lock().tasks.values().cloned().collect()
     }
 
     /// Transition a task to a new state.  Returns the updated task on success.
     pub fn transition_task(&self, id: Uuid, next: TaskState) -> anyhow::Result<Task> {
-        let mut s = self.inner.lock().unwrap();
+        let mut s = self.inner.lock();
         let task = s
             .tasks
             .get_mut(&id)
@@ -216,7 +216,7 @@ impl AppState {
         task_id: Uuid,
         agent_id: &str,
     ) -> anyhow::Result<Task> {
-        let mut s = self.inner.lock().unwrap();
+        let mut s = self.inner.lock();
         let task = s
             .tasks
             .get_mut(&task_id)
@@ -229,14 +229,13 @@ impl AppState {
     // --- agents --------------------------------------------------------------
 
     pub fn register_agent(&self, agent: Agent) {
-        let mut s = self.inner.lock().unwrap();
+        let mut s = self.inner.lock();
         s.agents.insert(agent.id.clone(), agent);
     }
 
     pub fn all_agents(&self) -> Vec<Agent> {
         self.inner
             .lock()
-            .unwrap()
             .agents
             .values()
             .cloned()
@@ -244,12 +243,12 @@ impl AppState {
     }
 
     pub fn get_agent(&self, id: &str) -> Option<Agent> {
-        self.inner.lock().unwrap().agents.get(id).cloned()
+        self.inner.lock().agents.get(id).cloned()
     }
 
     /// Update the connected status of an agent.
     pub fn set_agent_connected(&self, id: &str, connected: bool) {
-        let mut s = self.inner.lock().unwrap();
+        let mut s = self.inner.lock();
         if let Some(agent) = s.agents.get_mut(id) {
             agent.connected = connected;
             tracing::info!(agent_id = id, connected, "agent connection status updated");
