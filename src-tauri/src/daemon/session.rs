@@ -32,10 +32,6 @@ pub fn socket_dir() -> PathBuf {
     PathBuf::from("/tmp/vaelkor")
 }
 
-pub fn socket_path(agent_id: &str) -> PathBuf {
-    socket_dir().join(format!("{agent_id}.sock"))
-}
-
 // ---------------------------------------------------------------------------
 // Ensure all directories exist at startup
 // ---------------------------------------------------------------------------
@@ -165,10 +161,4 @@ impl SessionInfo {
         Ok(())
     }
 
-    pub fn read() -> anyhow::Result<Self> {
-        let path = session_file()?;
-        let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("read session file {}", path.display()))?;
-        Ok(serde_json::from_str(&raw)?)
-    }
 }

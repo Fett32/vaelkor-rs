@@ -454,9 +454,6 @@ async fn handle_envelope(
                 AgentState::Running { task_id } => {
                     (true, Some(*task_id), Some("running".to_owned()))
                 }
-                AgentState::Uninitialized => {
-                    (false, None, Some("uninitialized".to_owned()))
-                }
             };
             let resp_env = Envelope::new(
                 MSG_STATUS_RESPONSE,

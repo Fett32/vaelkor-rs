@@ -12,29 +12,6 @@ pub fn session_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Create a new detached tmux session running `command`.
-/// `command` is split on whitespace; use shell quoting yourself if needed.
-pub fn create_session(name: &str, command: &str) -> Result<()> {
-    let args: Vec<&str> = command.split_whitespace().collect();
-    let mut cmd = Command::new("tmux");
-    cmd.args(["new-session", "-d", "-s", name]);
-    if !args.is_empty() {
-        cmd.arg("--");
-        cmd.args(&args);
-    }
-    let out = cmd.output().context("failed to spawn tmux")?;
-    if !out.status.success() {
-        bail!(
-            "tmux new-session failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    apply_session_defaults(name);
-
-    Ok(())
-}
-
 /// Create a new detached tmux session running `command` in an optional working directory.
 /// After creation, disables paste detection by setting assume-paste-time to 0.
 pub fn create_session_with_dir(name: &str, command: &str, workdir: Option<&str>) -> Result<()> {
@@ -70,20 +47,6 @@ pub fn create_session_with_dir(name: &str, command: &str, workdir: Option<&str>)
 
     apply_session_defaults(name);
 
-    Ok(())
-}
-
-/// Attach to an existing session (blocks until detached).
-/// In the wrapper main loop we never actually block on this; it's here
-/// for completeness and manual use.
-pub fn attach_session(name: &str) -> Result<()> {
-    let status = Command::new("tmux")
-        .args(["attach-session", "-t", name])
-        .status()
-        .context("failed to spawn tmux")?;
-    if !status.success() {
-        bail!("tmux attach-session failed");
-    }
     Ok(())
 }
 

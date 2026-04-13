@@ -361,29 +361,6 @@ impl AppState {
         Ok(result)
     }
 
-    /// Return all subtasks of the given parent, sorted by `subtask_order`.
-    pub fn get_subtasks(&self, parent_id: Uuid) -> Vec<Task> {
-        let s = self.inner.lock();
-        let mut subs: Vec<Task> = s
-            .tasks
-            .values()
-            .filter(|t| t.parent_task_id == Some(parent_id))
-            .cloned()
-            .collect();
-        subs.sort_by_key(|t| t.subtask_order);
-        subs
-    }
-
-    /// Returns `true` if every subtask of `parent_id` is in a terminal state.
-    /// Also returns `true` if there are no subtasks at all.
-    pub fn all_subtasks_done(&self, parent_id: Uuid) -> bool {
-        let s = self.inner.lock();
-        s.tasks
-            .values()
-            .filter(|t| t.parent_task_id == Some(parent_id))
-            .all(|t| t.state.is_terminal())
-    }
-
     /// Mark any Running/Accepted task assigned to `agent_id` as user-intervened.
     pub fn record_user_intervention(&self, agent_id: &str) {
         let mut s = self.inner.lock();
@@ -428,10 +405,6 @@ impl AppState {
             .values()
             .cloned()
             .collect()
-    }
-
-    pub fn get_agent(&self, id: &str) -> Option<Agent> {
-        self.inner.lock().agents.get(id).cloned()
     }
 
     /// Update the connected status of an agent.

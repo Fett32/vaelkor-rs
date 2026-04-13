@@ -139,22 +139,3 @@ fn load_one_profile(path: &Path) -> Result<ProjectProfile> {
     Ok(profile)
 }
 
-/// Delete a project profile.
-pub fn delete_profile(name: &str) -> Result<()> {
-    let dir = projects_dir()?;
-    let path = dir.join(format!("{name}.yaml"));
-
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .with_context(|| format!("delete {}", path.display()))?;
-        tracing::info!(project = name, "project profile deleted");
-    }
-
-    Ok(())
-}
-
-/// Get the filesystem path to a project profile (for use as a pointer).
-pub fn profile_path(name: &str) -> Result<PathBuf> {
-    let dir = projects_dir()?;
-    Ok(dir.join(format!("{name}.yaml")))
-}

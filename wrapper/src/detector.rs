@@ -7,8 +7,6 @@ pub enum AgentKind {
     Codex,
     /// Generic shell or unknown agent.
     Default,
-    /// User-supplied regex string.
-    Custom(String),
 }
 
 impl AgentKind {
@@ -29,7 +27,6 @@ impl AgentKind {
             AgentKind::ClaudeCode => r"^❯\s*$",
             AgentKind::Codex => r"^codex>",
             AgentKind::Default => r"^[\$>]\s*$",
-            AgentKind::Custom(p) => p.as_str(),
         }
     }
 }

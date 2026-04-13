@@ -15,7 +15,6 @@ use uuid::Uuid;
 pub const MSG_TASK_ASSIGN: &str = "task.assign";
 pub const MSG_TASK_ACCEPT: &str = "task.accept";
 pub const MSG_TASK_COMPLETE: &str = "task.complete";
-pub const MSG_TASK_BLOCKED: &str = "task.blocked";
 pub const MSG_STATUS_REQUEST: &str = "status.request";
 pub const MSG_STATUS_RESPONSE: &str = "status.response";
 pub const MSG_REGISTER: &str = "wrapper.register";
@@ -92,14 +91,6 @@ pub struct TaskComplete {
     pub output: Option<serde_json::Value>,
 }
 
-/// task.blocked — wrapper cannot proceed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskBlocked {
-    pub task_id: Uuid,
-    pub reason: String,
-    pub waiting_for: Option<String>,
-}
-
 /// status.response — reply to StatusRequest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusResponse {
@@ -128,5 +119,4 @@ pub struct UserIntervention {
 pub enum AgentState {
     Idle,
     Running { task_id: Uuid },
-    Uninitialized,
 }

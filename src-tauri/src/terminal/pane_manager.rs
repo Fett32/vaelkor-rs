@@ -28,8 +28,6 @@ const MAX_RIGHT_COLUMNS: usize = 3;
 struct PaneInfo {
     /// tmux pane ID (e.g. "%5")
     pane_id: String,
-    /// Agent ID this pane shows
-    agent_id: String,
     /// Which right-side column this pane belongs to (0-based). Orchestrator has None.
     column: Option<usize>,
 }
@@ -217,7 +215,6 @@ impl PaneManager {
 
         panes.insert(agent_id.to_string(), PaneInfo {
             pane_id,
-            agent_id: agent_id.to_string(),
             column,
         });
 
@@ -267,11 +264,6 @@ impl PaneManager {
 
         tracing::info!(agent_id, "removed agent pane from {MAIN_SESSION}");
         Ok(())
-    }
-
-    /// Check if an agent has a visible pane.
-    pub async fn has_pane(&self, agent_id: &str) -> bool {
-        self.panes.lock().await.contains_key(agent_id)
     }
 
     /// Get list of agents with visible panes.
@@ -425,7 +417,6 @@ impl PaneManager {
                     tracing::info!(agent_id, pane_id, column = ?column, "found existing pane on scan");
                     panes.insert(agent_id.clone(), PaneInfo {
                         pane_id,
-                        agent_id,
                         column,
                     });
                 }

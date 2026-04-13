@@ -53,17 +53,6 @@ pub struct SocketServer {
 }
 
 impl SocketServer {
-    pub fn new(app_state: AppState, pane_manager: PaneManager) -> Self {
-        Self {
-            writers: Arc::new(Mutex::new(HashMap::new())),
-            app_state,
-            pane_manager,
-            agent_configs: Arc::new(Vec::new()),
-            spawned: Arc::new(Mutex::new(HashMap::new())),
-            event_subscribers: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
     pub fn with_configs(
         app_state: AppState,
         pane_manager: PaneManager,
@@ -875,10 +864,6 @@ impl SocketServer {
         self.writers.lock().await.contains_key(agent_id)
     }
 
-    /// List all connected agent IDs.
-    pub async fn connected_agents(&self) -> Vec<String> {
-        self.writers.lock().await.keys().cloned().collect()
-    }
 }
 
 fn cli_error(correlation_id: Uuid, message: &str) -> Envelope {

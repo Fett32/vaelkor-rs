@@ -16,14 +16,11 @@ use uuid::Uuid;
 
 pub const MSG_TASK_ASSIGN: &str = "task.assign";
 pub const MSG_TASK_ACCEPT: &str = "task.accept";
-pub const MSG_TASK_REJECT: &str = "task.reject";
-pub const MSG_TASK_COMPLETE: &str = "task.complete";
 pub const MSG_TASK_BLOCKED: &str = "task.blocked";
-pub const MSG_STATUS_REQUEST: &str = "status.request";
+pub const MSG_TASK_COMPLETE: &str = "task.complete";
 pub const MSG_STATUS_RESPONSE: &str = "status.response";
 pub const MSG_REGISTER: &str = "wrapper.register";
 pub const MSG_ERROR: &str = "wrapper.error";
-pub const MSG_SHUTDOWN: &str = "daemon.shutdown";
 pub const MSG_USER_INTERVENTION: &str = "user.intervention";
 
 // Phase 9: CLI message types
@@ -97,14 +94,16 @@ pub struct TaskAccept {
 }
 
 // ---------------------------------------------------------------------------
-// W→O  task.reject
+// W→O  task.blocked
 // ---------------------------------------------------------------------------
 
-/// Wrapper refuses to handle the task (e.g. precondition not met).
+/// Wrapper cannot proceed and is waiting for something external.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskReject {
+pub struct TaskBlocked {
     pub task_id: Uuid,
     pub reason: String,
+    /// If the wrapper knows what it needs, it can suggest it here.
+    pub waiting_for: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -119,38 +118,6 @@ pub struct TaskComplete {
     pub summary: Option<String>,
     /// Machine-readable output data (free-form JSON).
     pub output: Option<serde_json::Value>,
-}
-
-// ---------------------------------------------------------------------------
-// W→O  task.blocked
-// ---------------------------------------------------------------------------
-
-/// Wrapper cannot proceed and is waiting for something external.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskBlocked {
-    pub task_id: Uuid,
-    pub reason: String,
-    /// If the wrapper knows what it needs, it can suggest it here.
-    pub waiting_for: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// O→W  status.request  /  W→O  status.response
-// ---------------------------------------------------------------------------
-
-/// Orchestrator pings the wrapper for a heartbeat / current status.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StatusRequest {
-    /// If present, ask about a specific task; otherwise ask for general status.
-    pub task_id: Option<Uuid>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StatusResponse {
-    pub agent_id: String,
-    pub task_id: Option<Uuid>,
-    pub alive: bool,
-    pub details: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -171,13 +138,6 @@ pub struct WrapperError {
     pub agent_id: String,
     pub message: String,
 }
-
-// ---------------------------------------------------------------------------
-// O→W  daemon.shutdown — daemon is going away
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DaemonShutdown {}
 
 // ---------------------------------------------------------------------------
 // user.intervention — wrapper signals user attention needed
@@ -238,7 +198,3 @@ pub struct CliProjectSave {
     pub stack: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CliErrorResponse {
-    pub error: String,
-}

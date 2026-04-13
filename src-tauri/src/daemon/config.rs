@@ -39,21 +39,6 @@ pub struct AgentConfig {
     /// Whether to auto-launch a wrapper for this agent on startup.
     #[serde(default)]
     pub autolaunch: bool,
-    /// Whether the wrapper should auto-connect to the daemon.
-    #[serde(default)]
-    pub autoconnect: bool,
-    /// Constraints on what the agent can do.
-    #[serde(default)]
-    pub constraints: Vec<String>,
-    /// Agent tier: "light", "heavy", etc.
-    #[serde(default = "default_tier")]
-    pub tier: String,
-    /// Maximum concurrent tasks this agent can handle.
-    #[serde(default = "default_max_concurrent")]
-    pub max_concurrent: u32,
-    /// What this agent should be used for (e.g. ["code", "review"]).
-    #[serde(default)]
-    pub use_for: Vec<String>,
     /// Working directory for the agent session.
     #[serde(default)]
     pub working_dir: Option<String>,
@@ -64,14 +49,6 @@ pub struct AgentConfig {
 
 fn default_role() -> String {
     "coder".to_string()
-}
-
-fn default_tier() -> String {
-    "light".to_string()
-}
-
-fn default_max_concurrent() -> u32 {
-    1
 }
 
 // ---------------------------------------------------------------------------
@@ -257,110 +234,3 @@ pub fn launch_wrappers(configs: &[(String, AgentConfig)]) -> Vec<(String, Child)
     children
 }
 
-// ---------------------------------------------------------------------------
-// Rules
-// ---------------------------------------------------------------------------
-
-pub const DEFAULT_RULES: &str = r#"# Vaelkor Agent Rules
-
-These rules are injected into every agent session managed by Vaelkor.
-Edit this file to customize agent behavior. Reset to defaults by deleting
-this file — Vaelkor will recreate it on next launch.
-
-## Core Rules
-
-- Do not edit files without explicit authorization from the user or orchestrator.
-- Propose changes and wait for approval before making them.
-- Keep diffs minimal — only change what is needed for the task.
-- Do not add features, refactoring, or cleanup beyond what was asked.
-- Ask before acting on ambiguous instructions.
-
-## Context Discipline
-
-- Read only the files and docs pointed to in your task context.
-- Do not explore the broader codebase unless the task requires it.
-- If you need information not in your context, ask the orchestrator.
-
-## Communication
-
-- Report completion clearly — state what was done and what changed.
-- If blocked, explain what you need and from whom.
-- If you discover something relevant to other tasks, note it in your completion summary.
-
-## Safety
-
-- Never commit directly to main/master without explicit permission.
-- Never run destructive commands (rm -rf, DROP TABLE, force push) without confirmation.
-- Never expose secrets, credentials, or API keys in output or commits.
-"#;
-
-/// Load rules from ~/.config/vaelkor/rules.md.
-/// If the file doesn't exist, create it with DEFAULT_RULES.
-pub fn load_rules() -> Result<String> {
-    let config_dir = session::config_dir()?;
-    let rules_path = config_dir.join("rules.md");
-
-    if rules_path.exists() {
-        let content = std::fs::read_to_string(&rules_path)
-            .with_context(|| format!("failed to read {}", rules_path.display()))?;
-        Ok(content)
-    } else {
-        // Create the config dir if needed, then write defaults.
-        std::fs::create_dir_all(&config_dir)
-            .with_context(|| format!("failed to create {}", config_dir.display()))?;
-        std::fs::write(&rules_path, DEFAULT_RULES)
-            .with_context(|| format!("failed to write {}", rules_path.display()))?;
-        tracing::info!(path = %rules_path.display(), "created default rules.md");
-        Ok(DEFAULT_RULES.to_string())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Task context formatting
-// ---------------------------------------------------------------------------
-
-/// Format a task description with full context for an agent.
-pub fn format_task_context(
-    project: Option<&str>,
-    instance: &str,
-    task_id: &str,
-    summary: &str,
-    files: &[String],
-    refs: &[String],
-    body: &str,
-) -> String {
-    let mut ctx = String::new();
-
-    ctx.push_str("# Task Assignment\n\n");
-
-    if let Some(proj) = project {
-        ctx.push_str(&format!("**Project:** {proj}\n"));
-    }
-    ctx.push_str(&format!("**Instance:** {instance}\n"));
-    ctx.push_str(&format!("**Task ID:** {task_id}\n"));
-    ctx.push_str(&format!("**Summary:** {summary}\n\n"));
-
-    if !files.is_empty() {
-        ctx.push_str("## Relevant Files\n\n");
-        for f in files {
-            ctx.push_str(&format!("- {f}\n"));
-        }
-        ctx.push('\n');
-    }
-
-    if !refs.is_empty() {
-        ctx.push_str("## References\n\n");
-        for r in refs {
-            ctx.push_str(&format!("- {r}\n"));
-        }
-        ctx.push('\n');
-    }
-
-    if !body.is_empty() {
-        ctx.push_str("## Details\n\n");
-        ctx.push_str(body);
-        ctx.push('\n');
-    }
-
-    ctx
-}
