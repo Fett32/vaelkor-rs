@@ -264,6 +264,9 @@ impl SocketServer {
             MSG_TASK_COMPLETE => {
                 if let Ok(payload) = env.decode_payload::<TaskComplete>() {
                     info!(agent_id, task_id = %payload.task_id, "task complete");
+                    let task_title = self.app_state.get_task(payload.task_id)
+                        .map(|t| t.title.clone())
+                        .unwrap_or_default();
                     if let Err(e) = self.app_state.transition_task(payload.task_id, TaskState::Completed) {
                         warn!("transition to Completed failed: {e}");
                     }
@@ -272,6 +275,23 @@ impl SocketServer {
                         json!({"task_id": payload.task_id.to_string(), "agent_id": agent_id}),
                     )
                     .await;
+
+                    // Notify orchestrator by injecting into its tmux session.
+                    let agent_id_owned = agent_id.to_string();
+                    let notify_msg = format!(
+                        "[Vaelkor] Task completed by {}: \"{}\" ({})",
+                        agent_id_owned, task_title, &payload.task_id.to_string()[..8]
+                    );
+                    tokio::spawn(async move {
+                        let _ = tokio::process::Command::new("tmux")
+                            .args(["send-keys", "-t", "vaelkor-orchestrator", "-l", &notify_msg])
+                            .output()
+                            .await;
+                        let _ = tokio::process::Command::new("tmux")
+                            .args(["send-keys", "-t", "vaelkor-orchestrator", "Enter"])
+                            .output()
+                            .await;
+                    });
                 }
             }
 

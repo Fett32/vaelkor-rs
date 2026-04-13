@@ -116,6 +116,10 @@ fn ensure_session(
 ) -> Result<bool> {
     if tmux::session_exists(session) {
         info!(session, "reusing existing tmux session");
+        // Ensure paste detection is disabled even on existing sessions.
+        let _ = std::process::Command::new("tmux")
+            .args(["set-option", "-t", session, "assume-paste-time", "0"])
+            .output();
         return Ok(false);
     }
     let command = explicit_command.unwrap_or(match kind {
