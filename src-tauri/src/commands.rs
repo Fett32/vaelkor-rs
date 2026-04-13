@@ -143,33 +143,18 @@ pub fn get_session_info(info: State<'_, SessionInfo>) -> Result<SessionInfo, Str
 }
 
 // ---------------------------------------------------------------------------
-// Terminal commands (vaelkor-main — single session, single stream)
+// Terminal commands (PTY relay to vaelkor-main)
 // ---------------------------------------------------------------------------
 
-/// Start streaming vaelkor-main output.
-/// The frontend should listen for "terminal-output" events.
+/// Check if the PTY relay is running.
 #[tauri::command]
 pub async fn terminal_attach(
     bridge: State<'_, TerminalBridge>,
-) -> Result<String, String> {
-    if !bridge.session_exists().await {
-        return Err("vaelkor-main session not found".to_string());
-    }
-
-    bridge.start_streaming().await;
-    bridge.get_full_content().await.map_err(err)
+) -> Result<bool, String> {
+    Ok(bridge.is_running().await)
 }
 
-/// Stop streaming vaelkor-main output.
-#[tauri::command]
-pub async fn terminal_detach(
-    bridge: State<'_, TerminalBridge>,
-) -> Result<(), String> {
-    bridge.stop_streaming().await;
-    Ok(())
-}
-
-/// Send keystrokes to vaelkor-main (tmux routes to active pane).
+/// Send keystrokes to the PTY (tmux routes to active pane).
 #[tauri::command]
 pub async fn terminal_send_keys(
     bridge: State<'_, TerminalBridge>,
@@ -178,12 +163,14 @@ pub async fn terminal_send_keys(
     bridge.send_keys(&keys).await.map_err(err)
 }
 
-/// Get current vaelkor-main content (one-shot, no streaming).
+/// Resize the PTY to match xterm.js dimensions.
 #[tauri::command]
-pub async fn terminal_capture(
+pub async fn terminal_resize(
     bridge: State<'_, TerminalBridge>,
-) -> Result<String, String> {
-    bridge.capture().await.map_err(err)
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    bridge.resize(cols, rows).await.map_err(err)
 }
 
 // ---------------------------------------------------------------------------

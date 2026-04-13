@@ -12,6 +12,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 // ---------------------------------------------------------------------------
 // State
@@ -26,10 +27,8 @@ let filterState = "";
 /** Active search string (lower-cased). */
 let filterSearch = "";
 
-/** Polling interval handle. */
-let pollHandle = null;
-
-const POLL_MS = 2000;
+/** Event unlisten handle. */
+let unlistenTasks = null;
 
 // ---------------------------------------------------------------------------
 // DOM refs
@@ -96,14 +95,16 @@ export function initTaskList() {
   }
 
   fetchTasks();
-  pollHandle = setInterval(fetchTasks, POLL_MS);
+  listen("tasks-changed", () => fetchTasks()).then((fn) => {
+    unlistenTasks = fn;
+  });
 }
 
 /**
  * Stop polling.  Call when tearing down the UI.
  */
 export function destroyTaskList() {
-  clearInterval(pollHandle);
+  if (unlistenTasks) unlistenTasks();
 }
 
 // ---------------------------------------------------------------------------

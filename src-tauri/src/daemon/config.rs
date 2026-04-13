@@ -1,0 +1,199 @@
+/// Agent configuration loaded from ~/.config/vaelkor/agents/*.yaml.
+///
+/// Each YAML file defines one agent. The filename (minus .yaml) is the agent ID.
+/// On startup, all configs are loaded and agents are auto-registered.
+/// Agents with `autolaunch: true` get their wrappers spawned automatically.
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+use std::process::Child;
+
+use super::session;
+use super::state::{Agent, AppState};
+
+// ---------------------------------------------------------------------------
+// Config structs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentConfig {
+    /// Display symbol for the UI.
+    #[serde(default)]
+    pub identity: Option<String>,
+    /// Agent role: coder, orchestrator, reviewer, etc.
+    #[serde(default = "default_role")]
+    pub role: String,
+    /// Command to launch the agent in its tmux session.
+    #[serde(default)]
+    pub command: Vec<String>,
+    /// Whether to auto-launch a wrapper for this agent on startup.
+    #[serde(default)]
+    pub autolaunch: bool,
+    /// Whether the wrapper should auto-connect to the daemon.
+    #[serde(default)]
+    pub autoconnect: bool,
+    /// Constraints on what the agent can do.
+    #[serde(default)]
+    pub constraints: Vec<String>,
+}
+
+fn default_role() -> String {
+    "coder".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Loading
+// ---------------------------------------------------------------------------
+
+/// Load all agent configs from ~/.config/vaelkor/agents/*.yaml.
+/// Returns (agent_id, config) pairs. The agent_id is the filename stem.
+pub fn load_agent_configs() -> Result<Vec<(String, AgentConfig)>> {
+    let config_dir = session::config_dir()?;
+    let agents_dir = config_dir.join("agents");
+
+    if !agents_dir.exists() {
+        tracing::info!("no agents config dir at {}", agents_dir.display());
+        return Ok(vec![]);
+    }
+
+    let mut configs = Vec::new();
+
+    let entries = std::fs::read_dir(&agents_dir)
+        .with_context(|| format!("failed to read {}", agents_dir.display()))?;
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+
+        let agent_id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
+
+        if let Some(id) = agent_id {
+            match load_one(&path) {
+                Ok(cfg) => {
+                    tracing::info!(agent_id = %id, role = %cfg.role, "loaded agent config");
+                    configs.push((id, cfg));
+                }
+                Err(e) => {
+                    tracing::warn!("failed to load {}: {e:#}", path.display());
+                }
+            }
+        }
+    }
+
+    Ok(configs)
+}
+
+fn load_one(path: &Path) -> Result<AgentConfig> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let config: AgentConfig = serde_yaml::from_str(&contents)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(config)
+}
+
+/// Register agents from config into AppState.
+/// Only registers agents that aren't already registered.
+pub fn register_agents_from_config(state: &AppState, configs: &[(String, AgentConfig)]) {
+    let existing = state.all_agents();
+    let existing_ids: std::collections::HashSet<&str> =
+        existing.iter().map(|a| a.id.as_str()).collect();
+
+    for (id, cfg) in configs {
+        if existing_ids.contains(id.as_str()) {
+            tracing::debug!(agent_id = %id, "agent already registered, skipping");
+            continue;
+        }
+
+        let display_name = if let Some(ref identity) = cfg.identity {
+            format!("{identity} {id}")
+        } else {
+            id.clone()
+        };
+
+        let mut agent = Agent::new(id.clone(), display_name);
+        agent.tmux_session = Some(format!("vaelkor-{id}"));
+        state.register_agent(agent);
+
+        tracing::info!(agent_id = %id, role = %cfg.role, "agent registered from config");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wrapper auto-launch
+// ---------------------------------------------------------------------------
+
+/// Find the vaelkor-wrapper binary. Looks next to the current executable first,
+/// then falls back to PATH.
+fn find_wrapper_binary() -> Result<PathBuf> {
+    // Try next to the current executable (workspace builds put both in target/debug/).
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.parent().unwrap_or(Path::new(".")).join("vaelkor-wrapper");
+        if sibling.exists() {
+            return Ok(sibling);
+        }
+    }
+
+    // Fall back to PATH lookup.
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("vaelkor-wrapper")
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Ok(PathBuf::from(path));
+            }
+        }
+    }
+
+    anyhow::bail!("vaelkor-wrapper binary not found")
+}
+
+/// Spawn wrapper processes for agents with `autolaunch: true`.
+/// Returns the child processes so the caller can track/kill them.
+pub fn launch_wrappers(configs: &[(String, AgentConfig)]) -> Vec<(String, Child)> {
+    let wrapper_bin = match find_wrapper_binary() {
+        Ok(bin) => {
+            tracing::info!(path = %bin.display(), "found vaelkor-wrapper binary");
+            bin
+        }
+        Err(e) => {
+            tracing::warn!("cannot auto-launch wrappers: {e}");
+            return vec![];
+        }
+    };
+
+    let mut children = Vec::new();
+
+    for (id, cfg) in configs {
+        if !cfg.autolaunch {
+            tracing::debug!(agent_id = %id, "autolaunch disabled, skipping");
+            continue;
+        }
+
+        match std::process::Command::new(&wrapper_bin)
+            .arg(id)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+        {
+            Ok(child) => {
+                tracing::info!(agent_id = %id, pid = child.id(), "wrapper auto-launched");
+                children.push((id.clone(), child));
+            }
+            Err(e) => {
+                tracing::error!(agent_id = %id, "failed to launch wrapper: {e}");
+            }
+        }
+    }
+
+    children
+}

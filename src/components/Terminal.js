@@ -1,13 +1,11 @@
 /**
- * Terminal — single xterm.js instance rendering vaelkor-main.
+ * Terminal — single xterm.js instance with PTY relay to vaelkor-main.
  *
  * Architecture:
- *   tmux owns all sessions. vaelkor-main is a display session with panes
- *   linked to individual agent sessions. This component renders that one
- *   session. tmux handles tiling, focus, and input routing.
- *
- *   User keystrokes go to vaelkor-main via the Rust backend.
- *   Terminal output streams from the backend's polling loop.
+ *   The Rust backend spawns `tmux attach -t vaelkor-main` inside a real PTY.
+ *   PTY output streams to xterm.js as incremental data (no polling, no
+ *   clear+rewrite). User input goes back through the PTY to tmux.
+ *   tmux handles tiling and input routing to the active pane.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -22,7 +20,6 @@ let term = null;
 let fitAddon = null;
 let XTerm = null;
 let FitAddon = null;
-let lastContentKey = null;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -37,22 +34,12 @@ export async function initTerminal() {
   await loadXterm();
   createTerminal();
 
-  // Listen for terminal output from the backend (single stream).
+  // Listen for terminal output from PTY relay (incremental — just append).
   listen("terminal-output", (event) => {
     const { data } = event.payload;
     if (!data || !term) return;
-
-    // Skip if content unchanged.
-    const contentKey = `${data.length}:${data.slice(0, 50)}:${data.slice(-50)}`;
-    if (lastContentKey === contentKey) return;
-    lastContentKey = contentKey;
-
-    // Clear and rewrite (capture-pane sends full screen each time).
-    term.write("\x1b[2J\x1b[H" + data);
+    term.write(data);
   });
-
-  // Auto-attach to vaelkor-main.
-  attach();
 }
 
 // ---------------------------------------------------------------------------
@@ -115,47 +102,35 @@ function createTerminal() {
   term.open($container);
   if (fitAddon) fitAddon.fit();
 
-  term.writeln(`\x1b[35mVaelkor\x1b[0m — vaelkor-main`);
-  term.writeln("\u2500".repeat(40));
-  term.write("\r\n");
-
-  // User input → vaelkor-main via backend.
+  // User input → PTY via Rust backend.
   term.onData((data) => {
     invoke("terminal_send_keys", { keys: data }).catch((e) => {
       console.warn("[Terminal] send_keys failed:", e);
     });
   });
 
-  // Refit on container resize.
+  // Report terminal size to backend so PTY matches xterm.js dimensions.
+  function reportSize() {
+    if (!term) return;
+    invoke("terminal_resize", { cols: term.cols, rows: term.rows }).catch(() => {});
+  }
+
+  // Resize on container resize.
   const ro = new ResizeObserver(() => {
     if (fitAddon) fitAddon.fit();
+    reportSize();
   });
   ro.observe($container);
+
+  // Also report on xterm resize event.
+  term.onResize(() => reportSize());
+
+  // Initial size report.
+  reportSize();
 }
 
 // ---------------------------------------------------------------------------
-// Attach to vaelkor-main
-// ---------------------------------------------------------------------------
-
-async function attach() {
-  // Retry until vaelkor-main exists (pane manager may still be creating it).
-  for (let i = 0; i < 20; i++) {
-    try {
-      const initialContent = await invoke("terminal_attach");
-      if (term && initialContent) {
-        term.write("\x1b[2J\x1b[H" + initialContent);
-      }
-      return;
-    } catch (err) {
-      console.warn(`[Terminal] attach attempt ${i + 1}: ${err}`);
-      await new Promise((r) => setTimeout(r, 500));
-    }
-  }
-  console.error("[Terminal] failed to attach to vaelkor-main after retries");
-}
-
-// ---------------------------------------------------------------------------
-// Public write API (for other modules to pipe text)
+// Public write API (for other modules)
 // ---------------------------------------------------------------------------
 
 /**

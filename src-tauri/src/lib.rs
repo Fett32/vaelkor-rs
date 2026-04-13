@@ -3,7 +3,6 @@ mod daemon;
 mod wrapper;
 mod terminal;
 
-use std::time::Duration;
 use tauri::Emitter;
 use terminal::bridge::TerminalBridge;
 use terminal::pane_manager::PaneManager;
@@ -31,6 +30,18 @@ pub fn run() {
             daemon::state::AppState::new()
         }
     };
+    // Load agent configs from ~/.config/vaelkor/agents/*.yaml and register them.
+    let agent_configs = match daemon::config::load_agent_configs() {
+        Ok(configs) => {
+            daemon::config::register_agents_from_config(&app_state, &configs);
+            configs
+        }
+        Err(e) => {
+            tracing::warn!("failed to load agent configs: {e:#}");
+            vec![]
+        }
+    };
+
     let pane_manager = PaneManager::new();
     let socket_server = SocketServer::new(app_state.clone(), pane_manager.clone());
     let terminal_bridge = TerminalBridge::new();
@@ -48,6 +59,9 @@ pub fn run() {
         .manage(session_info)
         .manage(pane_manager.clone())
         .setup(move |app| {
+            // Wire up app handle so AppState can emit push events.
+            app_state.set_app_handle(app.handle().clone());
+
             // Create vaelkor-main tmux session.
             let pm = pane_manager;
             tauri::async_runtime::spawn(async move {
@@ -64,22 +78,103 @@ pub fn run() {
                 }
             });
 
-            // Spawn terminal output polling loop (single stream: vaelkor-main)
+            // Auto-launch wrappers for agents with autolaunch: true.
+            // Small delay so the socket server is ready to accept connections.
+            let configs_for_launch = agent_configs;
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let mut children = daemon::config::launch_wrappers(&configs_for_launch);
+
+                // Keep children alive until the process exits, then clean up.
+                // This thread just waits — when the main process exits, the
+                // children get SIGHUP automatically on Linux.
+                for (_id, ref mut child) in &mut children {
+                    let _ = child.wait();
+                }
+            });
+
+            // Start PTY relay for vaelkor-main.
+            // The relay spawns `tmux attach` in a real PTY and reads its output.
+            // We need a short delay to ensure vaelkor-main exists first.
             let handle = app.handle().clone();
             let bridge = terminal_bridge_clone;
             tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                // Wait for vaelkor-main to be created.
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-                    if let Some(new_content) = bridge.poll_changes().await {
-                        let chunk = terminal::bridge::TerminalChunk {
-                            data: new_content,
-                        };
-                        if let Err(e) = handle.emit("terminal-output", &chunk) {
-                            tracing::warn!("emit failed: {e}");
+                // Start the PTY relay (blocking call to set up PTY).
+                let reader = match tokio::task::spawn_blocking({
+                    let bridge = bridge.clone();
+                    move || bridge.start_relay()
+                })
+                .await
+                {
+                    Ok(Ok(reader)) => reader,
+                    Ok(Err(e)) => {
+                        tracing::error!("PTY relay failed to start: {e:#}");
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!("PTY relay task panicked: {e}");
+                        return;
+                    }
+                };
+
+                // Read PTY output in a blocking thread and emit to frontend.
+                // The first ~300ms of output is tmux negotiation noise — drain
+                // it, then force a clean redraw and start forwarding.
+                tokio::task::spawn_blocking(move || {
+                    use std::io::Read as _;
+                    let mut reader = reader;
+                    let mut buf = [0u8; 4096];
+
+                    // Phase 1: drain initial negotiation noise.
+                    let drain_until = std::time::Instant::now()
+                        + std::time::Duration::from_millis(300);
+                    while std::time::Instant::now() < drain_until {
+                        match reader.read(&mut buf) {
+                            Ok(0) => {
+                                tracing::info!("PTY relay EOF during drain");
+                                return;
+                            }
+                            Ok(n) => {
+                                tracing::debug!("drained {n} bytes of PTY negotiation");
+                            }
+                            Err(e) => {
+                                tracing::warn!("PTY read error during drain: {e}");
+                                return;
+                            }
                         }
                     }
-                }
+
+                    // Force tmux to redraw cleanly after drain.
+                    let _ = std::process::Command::new("tmux")
+                        .args(["refresh-client", "-t", "vaelkor-main"])
+                        .output();
+
+                    // Phase 2: forward PTY output to frontend.
+                    loop {
+                        match reader.read(&mut buf) {
+                            Ok(0) => {
+                                tracing::info!("PTY relay EOF");
+                                break;
+                            }
+                            Ok(n) => {
+                                let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                                let chunk = terminal::bridge::TerminalChunk { data };
+                                if let Err(e) = handle.emit("terminal-output", &chunk) {
+                                    tracing::warn!("emit failed: {e}");
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("PTY read error: {e}");
+                                break;
+                            }
+                        }
+                    }
+                })
+                .await
+                .ok();
             });
 
             Ok(())
@@ -93,9 +188,8 @@ pub fn run() {
             commands::register_agent,
             commands::get_session_info,
             commands::terminal_attach,
-            commands::terminal_detach,
             commands::terminal_send_keys,
-            commands::terminal_capture,
+            commands::terminal_resize,
             commands::pane_show,
             commands::pane_hide,
             commands::pane_list,

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use parking_lot::Mutex;
+use tauri::AppHandle;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -171,6 +172,8 @@ use std::sync::Arc;
 pub struct AppState {
     inner: Arc<Mutex<StateInner>>,
     save_path: Arc<Option<PathBuf>>,
+    /// App handle for emitting push events to the frontend.
+    app_handle: Arc<Mutex<Option<AppHandle>>>,
 }
 
 impl Default for AppState {
@@ -178,6 +181,7 @@ impl Default for AppState {
         Self {
             inner: Arc::new(Mutex::new(StateInner::default())),
             save_path: Arc::new(None),
+            app_handle: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -191,6 +195,22 @@ struct StateInner {
 impl AppState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the app handle for push events. Call once during Tauri setup.
+    pub fn set_app_handle(&self, handle: AppHandle) {
+        *self.app_handle.lock() = Some(handle);
+    }
+
+    /// Emit an event to the frontend (non-blocking, best-effort).
+    fn emit_event(&self, event: &str) {
+        let guard = self.app_handle.lock();
+        if let Some(ref handle) = *guard {
+            use tauri::Emitter;
+            if let Err(e) = handle.emit(event, ()) {
+                tracing::warn!("failed to emit {event}: {e}");
+            }
+        }
     }
 
     /// Create a new AppState that auto-saves to the given path.
@@ -229,6 +249,7 @@ impl AppState {
         Self {
             inner: Arc::new(Mutex::new(inner)),
             save_path: Arc::new(Some(path)),
+            app_handle: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -256,6 +277,7 @@ impl AppState {
         s.tasks.insert(task.id, task);
         drop(s);
         self.save();
+        self.emit_event("tasks-changed");
     }
 
     pub fn get_task(&self, id: Uuid) -> Option<Task> {
@@ -277,6 +299,7 @@ impl AppState {
         let result = task.clone();
         drop(s);
         self.save();
+        self.emit_event("tasks-changed");
         Ok(result)
     }
 
@@ -296,6 +319,7 @@ impl AppState {
         let result = task.clone();
         drop(s);
         self.save();
+        self.emit_event("tasks-changed");
         Ok(result)
     }
 
@@ -306,6 +330,7 @@ impl AppState {
         s.agents.insert(agent.id.clone(), agent);
         drop(s);
         self.save();
+        self.emit_event("agents-changed");
     }
 
     pub fn all_agents(&self) -> Vec<Agent> {
@@ -336,5 +361,6 @@ impl AppState {
         }
         drop(s);
         self.save();
+        self.emit_event("agents-changed");
     }
 }

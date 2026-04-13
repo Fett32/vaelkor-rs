@@ -11,6 +11,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 // ---------------------------------------------------------------------------
 // Data model (mirrors Rust Agent struct via serde JSON)
@@ -34,10 +35,8 @@ let agents = [];
 /** ID of the currently selected agent, or null. */
 let selectedId = null;
 
-/** Polling interval handle. */
-let pollHandle = null;
-
-const POLL_MS = 3000;
+/** Event unlisten handle. */
+let unlistenAgents = null;
 
 // ---------------------------------------------------------------------------
 // DOM refs (resolved once after DOMContentLoaded)
@@ -77,16 +76,18 @@ export function initAgentPanel() {
     await handleRegister();
   });
 
-  // Initial fetch + start polling.
+  // Initial fetch + listen for push updates from backend.
   fetchAgents();
-  pollHandle = setInterval(fetchAgents, POLL_MS);
+  listen("agents-changed", () => fetchAgents()).then((fn) => {
+    unlistenAgents = fn;
+  });
 }
 
 /**
  * Stop polling.  Call when tearing down the UI.
  */
 export function destroyAgentPanel() {
-  clearInterval(pollHandle);
+  if (unlistenAgents) unlistenAgents();
 }
 
 /**

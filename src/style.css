@@ -103,6 +103,8 @@ html, body {
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   overflow: hidden;
+  position: relative;
+  z-index: 2;
 }
 
 .panel-header {
