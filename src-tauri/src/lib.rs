@@ -92,10 +92,14 @@ pub fn run() {
                 tray::refresh_menu(&handle);
             });
 
-            // Flash the tray icon when a task completes.
+            // Flash the tray icon and send desktop notification when a task completes.
             let handle = app.handle().clone();
-            app.listen("task-completed", move |_| {
+            app.listen("task-completed", move |event| {
                 tray::set_task_complete_icon(&handle);
+
+                let title = serde_json::from_str::<String>(event.payload())
+                    .unwrap_or_default();
+                notify_task_completed(&title);
             });
 
             // Create vaelkor-main tmux session.
@@ -244,4 +248,19 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error running vaelkor");
+}
+
+/// Send a desktop notification via notify-send.
+fn notify_task_completed(title: &str) {
+    let body = if title.is_empty() {
+        "A task has completed.".to_string()
+    } else {
+        format!("Completed: {title}")
+    };
+
+    std::thread::spawn(move || {
+        let _ = std::process::Command::new("notify-send")
+            .args(["--app-name=Vaelkor", "Vaelkor", &body])
+            .output();
+    });
 }

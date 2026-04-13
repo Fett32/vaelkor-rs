@@ -229,6 +229,17 @@ impl AppState {
         }
     }
 
+    /// Emit an event with a serializable payload.
+    fn emit_event_with<S: serde::Serialize + Clone>(&self, event: &str, payload: S) {
+        let guard = self.app_handle.lock();
+        if let Some(ref handle) = *guard {
+            use tauri::Emitter;
+            if let Err(e) = handle.emit(event, payload) {
+                tracing::warn!("failed to emit {event}: {e}");
+            }
+        }
+    }
+
     /// Create a new AppState that auto-saves to the given path.
     /// If the file exists, state is restored from it (agents marked disconnected).
     pub fn with_persistence(path: PathBuf) -> Self {
@@ -329,7 +340,7 @@ impl AppState {
         self.save();
         self.emit_event("tasks-changed");
         if is_completing {
-            self.emit_event("task-completed");
+            self.emit_event_with("task-completed", result.title.clone());
         }
         Ok(result)
     }
