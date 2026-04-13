@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(/home/fett/Projects/vaelkor-rs/**)",
+      "Read(/home/fett/.config/vaelkor/**)",
+      "Read(/home/fett/.local/share/vaelkor/**)",
+      "Edit(/home/fett/Projects/vaelkor-rs/**)",
+      "Glob(/home/fett/Projects/vaelkor-rs/**)",
+      "Grep(/home/fett/Projects/vaelkor-rs/**)",
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)"
+    ]
+  }
+}
