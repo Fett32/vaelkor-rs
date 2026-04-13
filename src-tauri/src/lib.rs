@@ -5,7 +5,8 @@ mod terminal;
 
 use std::time::Duration;
 use tauri::Emitter;
-use terminal::bridge::{TerminalBridge, TerminalChunk};
+use terminal::bridge::TerminalBridge;
+use terminal::pane_manager::PaneManager;
 use tracing_subscriber::{fmt, EnvFilter};
 use wrapper::server::SocketServer;
 
@@ -30,7 +31,8 @@ pub fn run() {
             daemon::state::AppState::new()
         }
     };
-    let socket_server = SocketServer::new(app_state.clone());
+    let pane_manager = PaneManager::new();
+    let socket_server = SocketServer::new(app_state.clone(), pane_manager.clone());
     let terminal_bridge = TerminalBridge::new();
     let terminal_bridge_clone = terminal_bridge.clone();
     let session_info = daemon::session::SessionInfo::current();
@@ -44,7 +46,16 @@ pub fn run() {
         .manage(socket_server.clone())
         .manage(terminal_bridge)
         .manage(session_info)
+        .manage(pane_manager.clone())
         .setup(move |app| {
+            // Create vaelkor-main tmux session.
+            let pm = pane_manager;
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = pm.ensure_main_session().await {
+                    tracing::error!("failed to create vaelkor-main: {e:#}");
+                }
+            });
+
             // Spawn the socket server in the background
             let server = socket_server.clone();
             tauri::async_runtime::spawn(async move {
@@ -53,26 +64,19 @@ pub fn run() {
                 }
             });
 
-            // Spawn terminal output polling loop
+            // Spawn terminal output polling loop (single stream: vaelkor-main)
             let handle = app.handle().clone();
             let bridge = terminal_bridge_clone;
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_millis(100)).await;
 
-                    // Get list of actively streaming agents from the bridge
-                    let streaming = bridge.streaming_agents().await;
-
-                    // Only poll agents that are actively being streamed
-                    for agent_id in streaming {
-                        if let Some(new_content) = bridge.poll_changes(&agent_id).await {
-                            let chunk = TerminalChunk {
-                                agent_id: agent_id.clone(),
-                                data: new_content,
-                            };
-                            if let Err(e) = handle.emit("terminal-output", &chunk) {
-                                tracing::warn!("emit failed: {e}");
-                            }
+                    if let Some(new_content) = bridge.poll_changes().await {
+                        let chunk = terminal::bridge::TerminalChunk {
+                            data: new_content,
+                        };
+                        if let Err(e) = handle.emit("terminal-output", &chunk) {
+                            tracing::warn!("emit failed: {e}");
                         }
                     }
                 }
@@ -92,6 +96,9 @@ pub fn run() {
             commands::terminal_detach,
             commands::terminal_send_keys,
             commands::terminal_capture,
+            commands::pane_show,
+            commands::pane_hide,
+            commands::pane_list,
         ])
         .run(tauri::generate_context!())
         .expect("error running vaelkor");

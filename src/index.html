@@ -15,57 +15,49 @@
         <span class="session-meta" id="session-meta">—</span>
       </header>
 
-      <!-- ── Agent panel ──────────────────────────────────────────────── -->
-      <aside id="agent-panel">
+      <!-- ── Sidebar: agents + tasks ─────────────────────────────────── -->
+      <aside id="sidebar">
+        <!-- Agents section -->
         <div class="panel-header">
           <span>Agents</span>
-          <button id="btn-show-register">+ Register</button>
+          <button id="btn-show-register">+</button>
         </div>
         <div id="agent-list">
           <p class="agent-empty">No agents registered.</p>
         </div>
-        <!-- Register agent inline form (hidden until toggled) -->
         <form id="register-form" class="hidden" autocomplete="off">
           <input id="reg-id"      type="text" placeholder="Agent ID"       required />
           <input id="reg-name"    type="text" placeholder="Display name"   required />
           <input id="reg-tmux"    type="text" placeholder="tmux session (optional)" />
-          <button type="submit">Register agent</button>
+          <button type="submit">Register</button>
         </form>
-      </aside>
 
-      <!-- ── Task panel ───────────────────────────────────────────────── -->
-      <main id="task-panel">
-        <div id="task-toolbar">
-          <input id="task-search" type="search" placeholder="Filter tasks…" />
+        <!-- Tasks section -->
+        <div class="panel-header task-header">
+          <span>Tasks</span>
+          <button id="btn-new-task">+</button>
+        </div>
+        <div id="task-controls">
+          <input id="task-search" type="search" placeholder="Filter…" />
           <select id="task-filter-state">
-            <option value="">All states</option>
+            <option value="">All</option>
             <option value="ASSIGNED">Assigned</option>
             <option value="ACCEPTED">Accepted</option>
             <option value="COMPLETED">Completed</option>
             <option value="BLOCKED">Blocked</option>
             <option value="CANCELLED">Cancelled</option>
-            <option value="REJECTED">Rejected</option>
-            <option value="TIMED_OUT">Timed out</option>
-            <option value="INTERRUPTED">Interrupted</option>
-            <option value="RECOVERING">Recovering</option>
             <option value="STALE">Stale</option>
           </select>
-          <div class="spacer"></div>
-          <button id="btn-new-task">+ New task</button>
         </div>
         <div id="task-list-scroll">
           <!-- TaskList renders here -->
         </div>
-      </main>
+      </aside>
 
-      <!-- ── Terminal panel ───────────────────────────────────────────── -->
+      <!-- ── Terminal: single xterm.js showing vaelkor-main ──────────── -->
       <section id="terminal-panel">
-        <div id="terminal-tabs">
-          <!-- tabs injected by Terminal.js -->
-          <button id="term-add-tab" title="Open new terminal tab">+</button>
-        </div>
         <div id="terminal-container">
-          <!-- xterm.js slots injected by Terminal.js -->
+          <!-- single xterm.js instance -->
         </div>
       </section>
 

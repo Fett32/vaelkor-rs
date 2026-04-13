@@ -65,29 +65,35 @@ export function initTaskList() {
   $btnClose     = document.getElementById("btn-close-modal");
   $btnSubmit    = document.getElementById("btn-submit-task");
 
-  $btnNew.addEventListener("click", openModal);
-  $btnClose.addEventListener("click", closeModal);
-  $btnSubmit.addEventListener("click", handleSubmit);
+  if ($btnNew) $btnNew.addEventListener("click", openModal);
+  if ($btnClose) $btnClose.addEventListener("click", closeModal);
+  if ($btnSubmit) $btnSubmit.addEventListener("click", handleSubmit);
 
   // Close modal on backdrop click.
-  $overlay.addEventListener("click", (e) => {
-    if (e.target === $overlay) closeModal();
-  });
+  if ($overlay) {
+    $overlay.addEventListener("click", (e) => {
+      if (e.target === $overlay) closeModal();
+    });
+  }
 
   // Keyboard: Escape closes modal.
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && $overlay.classList.contains("open")) closeModal();
+    if (e.key === "Escape" && $overlay?.classList.contains("open")) closeModal();
   });
 
-  $search.addEventListener("input", () => {
-    filterSearch = $search.value.toLowerCase();
-    renderTasks();
-  });
+  if ($search) {
+    $search.addEventListener("input", () => {
+      filterSearch = $search.value.toLowerCase();
+      renderTasks();
+    });
+  }
 
-  $filterSelect.addEventListener("change", () => {
-    filterState = $filterSelect.value;
-    renderTasks();
-  });
+  if ($filterSelect) {
+    $filterSelect.addEventListener("change", () => {
+      filterState = $filterSelect.value;
+      renderTasks();
+    });
+  }
 
   fetchTasks();
   pollHandle = setInterval(fetchTasks, POLL_MS);
@@ -227,17 +233,12 @@ function buildTaskCard(task) {
   card.className = "task-card";
   card.dataset.taskId = task.id;
 
-  // Title row
+  // Title
   const titleEl = document.createElement("div");
   titleEl.className = "task-title";
   titleEl.textContent = task.title;
 
-  // Description row
-  const descEl = document.createElement("div");
-  descEl.className = "task-desc";
-  descEl.textContent = task.description || "—";
-
-  // Meta row: state badge + assigned agent + timestamp
+  // Meta: state badge + agent + time
   const metaEl = document.createElement("div");
   metaEl.className = "task-meta";
 
@@ -247,32 +248,31 @@ function buildTaskCard(task) {
   badge.textContent = task.state;
 
   const agentSpan = document.createElement("span");
-  agentSpan.textContent = task.assigned_to
-    ? ` · ${task.assigned_to}`
-    : " · unassigned";
+  agentSpan.textContent = task.assigned_to || "unassigned";
 
   const timeSpan = document.createElement("span");
-  timeSpan.textContent = " · " + formatRelative(task.updated_at);
+  timeSpan.textContent = formatRelative(task.updated_at);
 
   metaEl.append(badge, agentSpan, timeSpan);
 
-  // Actions
-  const actions = document.createElement("div");
-  actions.className = "task-actions";
-
+  // Cancel button for active tasks
   const terminalStates = new Set([
     "COMPLETED", "CANCELLED", "REJECTED", "TIMED_OUT",
   ]);
 
   if (!terminalStates.has(task.state)) {
+    const actions = document.createElement("div");
+    actions.className = "task-actions";
     const btnCancel = document.createElement("button");
     btnCancel.className = "cancel";
     btnCancel.textContent = "Cancel";
     btnCancel.addEventListener("click", () => cancelTask(task.id));
     actions.appendChild(btnCancel);
+    card.append(titleEl, metaEl, actions);
+  } else {
+    card.append(titleEl, metaEl);
   }
 
-  card.append(titleEl, descEl, metaEl, actions);
   return card;
 }
 

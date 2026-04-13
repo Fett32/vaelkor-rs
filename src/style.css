@@ -54,16 +54,15 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Layout ──────────────────────────────────────────────────────────────── */
+/* ── Layout: sidebar + full terminal ────────────────────────────────────── */
 
 #app {
   display: grid;
-  grid-template-rows: 40px 1fr 260px;
+  grid-template-rows: 40px 1fr;
   grid-template-columns: 260px 1fr;
   grid-template-areas:
-    "header  header"
-    "agents  tasks"
-    "agents  terminal";
+    "header   header"
+    "sidebar  terminal";
   height: 100vh;
   overflow: hidden;
 }
@@ -95,10 +94,10 @@ html, body {
   font-family: var(--font-mono);
 }
 
-/* ── Agent panel ─────────────────────────────────────────────────────────── */
+/* ── Sidebar (agents + tasks) ───────────────────────────────────────────── */
 
-#agent-panel {
-  grid-area: agents;
+#sidebar {
+  grid-area: sidebar;
   display: flex;
   flex-direction: column;
   background: var(--bg-panel);
@@ -120,6 +119,10 @@ html, body {
   flex-shrink: 0;
 }
 
+.panel-header.task-header {
+  border-top: 1px solid var(--border);
+}
+
 .panel-header button {
   background: var(--accent-dim);
   color: var(--text-primary);
@@ -135,20 +138,22 @@ html, body {
   background: var(--accent);
 }
 
+/* Agent list */
+
 #agent-list {
-  flex: 1;
   overflow-y: auto;
-  padding: 6px 0;
+  padding: 4px 0;
+  flex-shrink: 0;
+  max-height: 200px;
 }
 
 .agent-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 14px;
+  padding: 6px 14px;
   cursor: pointer;
   transition: background 0.1s;
-  border-radius: 0;
 }
 
 .agent-item:hover {
@@ -172,7 +177,7 @@ html, body {
 .agent-info { min-width: 0; }
 
 .agent-name {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -180,7 +185,7 @@ html, body {
 }
 
 .agent-meta {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-dim);
   font-family: var(--font-mono);
   white-space: nowrap;
@@ -189,8 +194,8 @@ html, body {
 }
 
 .agent-empty {
-  padding: 20px 14px;
-  font-size: 12px;
+  padding: 12px 14px;
+  font-size: 11px;
   color: var(--text-dim);
   text-align: center;
 }
@@ -198,11 +203,11 @@ html, body {
 /* Register agent form */
 
 #register-form {
-  padding: 10px 14px;
+  padding: 8px 14px;
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
@@ -211,28 +216,23 @@ html, body {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 11px;
   font-family: var(--font-mono);
-  padding: 5px 8px;
+  padding: 4px 8px;
   outline: none;
   transition: border-color 0.15s;
 }
 
-#register-form input:focus {
-  border-color: var(--border-focus);
-}
-
-#register-form input::placeholder {
-  color: var(--text-dim);
-}
+#register-form input:focus { border-color: var(--border-focus); }
+#register-form input::placeholder { color: var(--text-dim); }
 
 #register-form button {
   background: var(--accent);
   color: #fff;
   border: none;
   border-radius: var(--radius-sm);
-  padding: 6px;
-  font-size: 12px;
+  padding: 5px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   transition: opacity 0.15s;
@@ -240,117 +240,84 @@ html, body {
 
 #register-form button:hover { opacity: 0.85; }
 
-/* ── Task list ───────────────────────────────────────────────────────────── */
+/* Task controls */
 
-#task-panel {
-  grid-area: tasks;
+#task-controls {
   display: flex;
-  flex-direction: column;
-  background: var(--bg-base);
-  overflow: hidden;
-}
-
-#task-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
+  gap: 6px;
+  padding: 6px 14px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  background: var(--bg-panel);
 }
 
-#task-toolbar input,
-#task-toolbar select {
+#task-controls input,
+#task-controls select {
   background: var(--bg-panel-alt);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-size: 12px;
-  padding: 5px 8px;
+  font-size: 11px;
+  padding: 4px 6px;
   outline: none;
-  transition: border-color 0.15s;
+  flex: 1;
+  min-width: 0;
 }
 
-#task-toolbar input:focus,
-#task-toolbar select:focus {
-  border-color: var(--border-focus);
-}
+#task-controls input:focus,
+#task-controls select:focus { border-color: var(--border-focus); }
+#task-controls select option { background: var(--bg-panel-alt); }
 
-#task-toolbar select option { background: var(--bg-panel-alt); }
-
-#task-toolbar .spacer { flex: 1; }
-
-#btn-new-task {
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: opacity 0.15s;
-}
-
-#btn-new-task:hover { opacity: 0.85; }
+/* Task list */
 
 #task-list-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 10px 16px;
+  padding: 6px 10px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .task-card {
-  background: var(--bg-panel);
+  background: var(--bg-panel-alt);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 14px;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 4px 12px;
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
   cursor: default;
-  transition: border-color 0.12s, background 0.12s;
+  transition: border-color 0.12s;
 }
 
 .task-card:hover {
   border-color: var(--border-focus);
-  background: var(--bg-panel-alt);
 }
 
 .task-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
-  grid-column: 1;
 }
 
 .task-desc {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
-  grid-column: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .task-meta {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-dim);
   font-family: var(--font-mono);
-  grid-column: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
 }
 
 .task-actions {
-  grid-column: 2;
-  grid-row: 1 / span 3;
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding-top: 2px;
+  gap: 4px;
+  margin-top: 4px;
 }
 
 .task-actions button {
@@ -358,8 +325,8 @@ html, body {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  font-size: 11px;
-  padding: 2px 7px;
+  font-size: 10px;
+  padding: 1px 6px;
   cursor: pointer;
   transition: border-color 0.12s, color 0.12s;
 }
@@ -378,12 +345,12 @@ html, body {
 
 .state-badge {
   display: inline-block;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  padding: 1px 6px;
-  border-radius: 3px;
+  padding: 0px 4px;
+  border-radius: 2px;
   font-family: var(--font-mono);
   background: rgba(255,255,255,0.06);
 }
@@ -401,9 +368,9 @@ html, body {
 
 .task-empty {
   color: var(--text-dim);
-  font-size: 13px;
+  font-size: 11px;
   text-align: center;
-  margin-top: 40px;
+  margin-top: 20px;
 }
 
 /* ── New task modal ──────────────────────────────────────────────────────── */
@@ -496,97 +463,25 @@ html, body {
 #task-modal .btn-submit:hover,
 #task-modal .btn-cancel-modal:hover { opacity: 0.8; }
 
-/* ── Terminal ────────────────────────────────────────────────────────────── */
+/* ── Terminal — fills remaining space ──────────────────────────────────── */
 
 #terminal-panel {
   grid-area: terminal;
   display: flex;
   flex-direction: column;
   background: #0a0a0c;
-  border-top: 1px solid var(--border);
   overflow: hidden;
 }
-
-#terminal-tabs {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 12px;
-  height: 32px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
-  flex-shrink: 0;
-  overflow-x: auto;
-}
-
-.term-tab {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  height: 26px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.1s, color 0.1s;
-  user-select: none;
-}
-
-.term-tab:hover { background: var(--bg-hover); color: var(--text-primary); }
-
-.term-tab.active {
-  background: var(--bg-panel-alt);
-  color: var(--text-primary);
-  font-weight: 500;
-}
-
-.term-tab .close-tab {
-  font-size: 14px;
-  line-height: 1;
-  color: var(--text-dim);
-  padding: 0 2px;
-  border-radius: 2px;
-}
-
-.term-tab .close-tab:hover { color: var(--text-primary); }
-
-#term-add-tab {
-  padding: 0 8px;
-  height: 24px;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-dim);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  margin-left: 4px;
-  transition: color 0.1s, border-color 0.1s;
-}
-
-#term-add-tab:hover { color: var(--text-primary); border-color: var(--border-focus); }
 
 #terminal-container {
   flex: 1;
   overflow: hidden;
-  position: relative;
-}
-
-/* xterm.js container slots */
-.xterm-slot {
-  position: absolute;
-  inset: 0;
-  display: none;
   padding: 4px 6px;
 }
 
-.xterm-slot.active { display: block; }
-
-/* xterm.js resets */
-.xterm-slot .xterm { height: 100%; }
-.xterm-slot .xterm-viewport { overflow-y: auto !important; }
+/* xterm.js fills container */
+#terminal-container .xterm { height: 100%; }
+#terminal-container .xterm-viewport { overflow-y: auto !important; }
 
 /* no-xterm fallback */
 #terminal-fallback {

@@ -9,6 +9,7 @@
 /// connection registry.
 
 use crate::daemon::state::{AppState, TaskState};
+use crate::terminal::pane_manager::PaneManager;
 use crate::wrapper::protocol::{
     Envelope, TaskAccept, TaskBlocked, TaskComplete, WrapperError, WrapperRegister,
     MSG_ERROR, MSG_REGISTER, MSG_TASK_ACCEPT, MSG_TASK_BLOCKED, MSG_TASK_COMPLETE,
@@ -33,13 +34,15 @@ type WriterMap = Arc<Mutex<HashMap<String, tokio::net::unix::OwnedWriteHalf>>>;
 pub struct SocketServer {
     writers: WriterMap,
     app_state: AppState,
+    pane_manager: PaneManager,
 }
 
 impl SocketServer {
-    pub fn new(app_state: AppState) -> Self {
+    pub fn new(app_state: AppState, pane_manager: PaneManager) -> Self {
         Self {
             writers: Arc::new(Mutex::new(HashMap::new())),
             app_state,
+            pane_manager,
         }
     }
 
@@ -110,6 +113,11 @@ impl SocketServer {
 
         // Update agent status in app state
         self.app_state.set_agent_connected(&agent_id, true);
+
+        // Add agent pane to vaelkor-main
+        if let Err(e) = self.pane_manager.add_agent_pane(&agent_id).await {
+            warn!(agent_id = %agent_id, "failed to add pane: {e:#}");
+        }
 
         // Read loop
         loop {

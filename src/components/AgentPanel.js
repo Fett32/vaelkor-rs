@@ -59,7 +59,7 @@ let $panel;
  * Initialise the agent panel.  Must be called after the DOM is ready.
  */
 export function initAgentPanel() {
-  $panel          = document.getElementById("agent-panel");
+  $panel          = document.getElementById("sidebar");
   $list           = document.getElementById("agent-list");
   $form           = document.getElementById("register-form");
   $btnShowRegister = document.getElementById("btn-show-register");

@@ -6,6 +6,7 @@
 use crate::daemon::session::SessionInfo;
 use crate::daemon::state::{Agent, AppState, Task, TaskState};
 use crate::terminal::bridge::TerminalBridge;
+use crate::terminal::pane_manager::PaneManager;
 use crate::wrapper::protocol::{Envelope, TaskAssign, MSG_TASK_ASSIGN};
 use crate::wrapper::server::SocketServer;
 use tauri::State;
@@ -142,54 +143,75 @@ pub fn get_session_info(info: State<'_, SessionInfo>) -> Result<SessionInfo, Str
 }
 
 // ---------------------------------------------------------------------------
-// Terminal commands
+// Terminal commands (vaelkor-main — single session, single stream)
 // ---------------------------------------------------------------------------
 
-/// Start streaming terminal output for an agent.
+/// Start streaming vaelkor-main output.
 /// The frontend should listen for "terminal-output" events.
 #[tauri::command]
 pub async fn terminal_attach(
     bridge: State<'_, TerminalBridge>,
-    agent_id: String,
 ) -> Result<String, String> {
-    if !bridge.session_exists(&agent_id).await {
-        return Err(format!("no tmux session for agent {agent_id}"));
+    if !bridge.session_exists().await {
+        return Err("vaelkor-main session not found".to_string());
     }
 
-    if bridge.start_streaming(&agent_id).await {
-        // Return initial content
-        bridge.get_full_content(&agent_id).await.map_err(err)
-    } else {
-        // Already streaming, just return current content
-        bridge.get_full_content(&agent_id).await.map_err(err)
-    }
+    bridge.start_streaming().await;
+    bridge.get_full_content().await.map_err(err)
 }
 
-/// Stop streaming terminal output for an agent.
+/// Stop streaming vaelkor-main output.
 #[tauri::command]
 pub async fn terminal_detach(
     bridge: State<'_, TerminalBridge>,
-    agent_id: String,
 ) -> Result<(), String> {
-    bridge.stop_streaming(&agent_id).await;
+    bridge.stop_streaming().await;
     Ok(())
 }
 
-/// Send keystrokes to an agent's terminal.
+/// Send keystrokes to vaelkor-main (tmux routes to active pane).
 #[tauri::command]
 pub async fn terminal_send_keys(
     bridge: State<'_, TerminalBridge>,
-    agent_id: String,
     keys: String,
 ) -> Result<(), String> {
-    bridge.send_keys(&agent_id, &keys).await.map_err(err)
+    bridge.send_keys(&keys).await.map_err(err)
 }
 
-/// Get current terminal content for an agent (one-shot, no streaming).
+/// Get current vaelkor-main content (one-shot, no streaming).
 #[tauri::command]
 pub async fn terminal_capture(
     bridge: State<'_, TerminalBridge>,
-    agent_id: String,
 ) -> Result<String, String> {
-    bridge.capture_pane(&agent_id).await.map_err(err)
+    bridge.capture().await.map_err(err)
+}
+
+// ---------------------------------------------------------------------------
+// Pane management commands
+// ---------------------------------------------------------------------------
+
+/// Show an agent's pane in vaelkor-main.
+#[tauri::command]
+pub async fn pane_show(
+    pm: State<'_, PaneManager>,
+    agent_id: String,
+) -> Result<(), String> {
+    pm.add_agent_pane(&agent_id).await.map_err(err)
+}
+
+/// Hide an agent's pane from vaelkor-main.
+#[tauri::command]
+pub async fn pane_hide(
+    pm: State<'_, PaneManager>,
+    agent_id: String,
+) -> Result<(), String> {
+    pm.remove_agent_pane(&agent_id).await.map_err(err)
+}
+
+/// Get list of agents with visible panes.
+#[tauri::command]
+pub async fn pane_list(
+    pm: State<'_, PaneManager>,
+) -> Result<Vec<String>, String> {
+    Ok(pm.visible_agents().await)
 }
