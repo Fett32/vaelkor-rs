@@ -23,7 +23,13 @@ pub fn run() {
         eprintln!("vaelkor: failed to create runtime dirs: {e}");
     }
 
-    let app_state = daemon::state::AppState::new();
+    let app_state = match daemon::session::data_dir() {
+        Ok(dir) => daemon::state::AppState::with_persistence(dir.join("state.json")),
+        Err(e) => {
+            tracing::warn!("no data dir, state will not persist: {e}");
+            daemon::state::AppState::new()
+        }
+    };
     let socket_server = SocketServer::new(app_state.clone());
     let terminal_bridge = TerminalBridge::new();
     let terminal_bridge_clone = terminal_bridge.clone();

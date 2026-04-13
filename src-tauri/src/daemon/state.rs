@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use parking_lot::Mutex;
 use uuid::Uuid;
 
@@ -166,12 +167,22 @@ impl Agent {
 
 use std::sync::Arc;
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct AppState {
     inner: Arc<Mutex<StateInner>>,
+    save_path: Arc<Option<PathBuf>>,
 }
 
-#[derive(Default)]
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(StateInner::default())),
+            save_path: Arc::new(None),
+        }
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
 struct StateInner {
     tasks: HashMap<Uuid, Task>,
     agents: HashMap<String, Agent>,
@@ -179,8 +190,62 @@ struct StateInner {
 
 impl AppState {
     pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a new AppState that auto-saves to the given path.
+    /// If the file exists, state is restored from it (agents marked disconnected).
+    pub fn with_persistence(path: PathBuf) -> Self {
+        let inner = if path.exists() {
+            match std::fs::read_to_string(&path) {
+                Ok(json) => match serde_json::from_str::<StateInner>(&json) {
+                    Ok(mut restored) => {
+                        // Mark all agents disconnected — connections are transient.
+                        for agent in restored.agents.values_mut() {
+                            agent.connected = false;
+                        }
+                        tracing::info!(
+                            tasks = restored.tasks.len(),
+                            agents = restored.agents.len(),
+                            "session restored from {}",
+                            path.display()
+                        );
+                        restored
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to parse session file: {e}, starting fresh");
+                        StateInner::default()
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("failed to read session file: {e}, starting fresh");
+                    StateInner::default()
+                }
+            }
+        } else {
+            StateInner::default()
+        };
+
         Self {
-            inner: Arc::new(Mutex::new(StateInner::default())),
+            inner: Arc::new(Mutex::new(inner)),
+            save_path: Arc::new(Some(path)),
+        }
+    }
+
+    /// Persist current state to disk. Called automatically after mutations.
+    fn save(&self) {
+        if let Some(path) = self.save_path.as_ref() {
+            let s = self.inner.lock();
+            match serde_json::to_string_pretty(&*s) {
+                Ok(json) => {
+                    if let Err(e) = std::fs::write(path, json) {
+                        tracing::warn!("failed to save session: {e}");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to serialize session: {e}");
+                }
+            }
         }
     }
 
@@ -189,6 +254,8 @@ impl AppState {
     pub fn add_task(&self, task: Task) {
         let mut s = self.inner.lock();
         s.tasks.insert(task.id, task);
+        drop(s);
+        self.save();
     }
 
     pub fn get_task(&self, id: Uuid) -> Option<Task> {
@@ -207,7 +274,10 @@ impl AppState {
             .get_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("task {} not found", id))?;
         task.transition(next)?;
-        Ok(task.clone())
+        let result = task.clone();
+        drop(s);
+        self.save();
+        Ok(result)
     }
 
     /// Assign a task to an agent (sets `assigned_to` and transitions to Assigned).
@@ -223,7 +293,10 @@ impl AppState {
             .ok_or_else(|| anyhow::anyhow!("task {} not found", task_id))?;
         task.assigned_to = Some(agent_id.to_string());
         task.updated_at = Utc::now();
-        Ok(task.clone())
+        let result = task.clone();
+        drop(s);
+        self.save();
+        Ok(result)
     }
 
     // --- agents --------------------------------------------------------------
@@ -231,6 +304,8 @@ impl AppState {
     pub fn register_agent(&self, agent: Agent) {
         let mut s = self.inner.lock();
         s.agents.insert(agent.id.clone(), agent);
+        drop(s);
+        self.save();
     }
 
     pub fn all_agents(&self) -> Vec<Agent> {
@@ -259,5 +334,7 @@ impl AppState {
             tracing::info!(agent_id = id, "agent auto-registered on connection");
             s.agents.insert(id.to_string(), agent);
         }
+        drop(s);
+        self.save();
     }
 }

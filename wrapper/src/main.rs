@@ -24,6 +24,11 @@ const IDLE_TAIL: usize = 5;
 /// Idle pattern must be stable for this many seconds before marking complete.
 const IDLE_STABLE_SECS: f64 = 3.0;
 
+/// Reconnect backoff: initial delay, max delay, multiplier.
+const RECONNECT_INITIAL_MS: u64 = 500;
+const RECONNECT_MAX_MS: u64 = 30_000;
+const RECONNECT_MULTIPLIER: f64 = 2.0;
+
 // ---- CLI args ---------------------------------------------------------------
 
 fn parse_args() -> Result<String> {
@@ -57,7 +62,51 @@ fn ensure_session(session: &str, kind: &AgentKind) -> Result<()> {
     Ok(())
 }
 
+// ---- connect + register -----------------------------------------------------
+
+/// Connect to daemon and send registration. Returns the client on success.
+async fn connect_and_register(agent: &str) -> Result<client::DaemonClient> {
+    let mut client = client::DaemonClient::connect(DAEMON_SOCK)
+        .await
+        .context("connecting to daemon")?;
+
+    let register_env = Envelope::new(MSG_REGISTER, WrapperRegister { agent_id: agent.to_owned() })?;
+    client.send(&register_env).await?;
+
+    Ok(client)
+}
+
+/// Try to connect with exponential backoff. Returns None only on fatal errors.
+async fn connect_with_backoff(agent: &str) -> client::DaemonClient {
+    let mut delay_ms = RECONNECT_INITIAL_MS;
+
+    loop {
+        match connect_and_register(agent).await {
+            Ok(client) => {
+                info!("reconnected to daemon");
+                return client;
+            }
+            Err(e) => {
+                warn!(
+                    delay_ms,
+                    "daemon connection failed ({e:#}), retrying in {delay_ms}ms"
+                );
+                sleep(Duration::from_millis(delay_ms)).await;
+                delay_ms = ((delay_ms as f64 * RECONNECT_MULTIPLIER) as u64).min(RECONNECT_MAX_MS);
+            }
+        }
+    }
+}
+
 // ---- main loop --------------------------------------------------------------
+
+/// Reason the run loop exited.
+enum ExitReason {
+    /// Daemon sent shutdown — wrapper should exit entirely.
+    Shutdown,
+    /// Connection lost — wrapper should reconnect.
+    Disconnected,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -75,34 +124,46 @@ async fn main() -> Result<()> {
 
     info!(agent, "vaelkor-wrapper starting");
 
-    // Connect to the daemon socket.
-    let mut client = client::DaemonClient::connect(DAEMON_SOCK)
+    // Ensure the tmux session exists (once, outside reconnect loop).
+    ensure_session(&session, &kind)?;
+
+    // Initial connection.
+    let mut client = connect_and_register(&agent)
         .await
-        .context("connecting to daemon")?;
-
-    // Register with the daemon.
-    let register_env = Envelope::new(MSG_REGISTER, WrapperRegister { agent_id: agent.clone() })?;
-    client.send(&register_env).await?;
-
-    // Ensure the tmux session exists.
-    if let Err(e) = ensure_session(&session, &kind) {
-        let msg = format!("{e:#}");
-        error!(%msg, "failed to create tmux session");
-        let err_env = Envelope::new(
-            MSG_ERROR,
-            WrapperError { agent_id: agent.clone(), message: msg },
-        )?;
-        client.send(&err_env).await?;
-        return Err(e);
-    }
-
-    // Runtime state
-    let mut state = AgentState::Idle;
-    /// Tracks when we first saw the idle pattern (for stability window).
-    let mut idle_since: Option<std::time::Instant> = None;
+        .context("initial daemon connection")?;
 
     // Give the agent a moment to render its first prompt before polling.
     sleep(Duration::from_millis(1500)).await;
+
+    loop {
+        let exit_reason = run_loop(&agent, &session, &detector, &mut client).await?;
+
+        match exit_reason {
+            ExitReason::Shutdown => {
+                info!("daemon sent shutdown, exiting");
+                break;
+            }
+            ExitReason::Disconnected => {
+                warn!("lost daemon connection, reconnecting...");
+                client = connect_with_backoff(&agent).await;
+                // Successfully reconnected — resume the run loop.
+            }
+        }
+    }
+
+    info!("vaelkor-wrapper exiting");
+    Ok(())
+}
+
+/// Run the main select loop. Returns the reason it exited.
+async fn run_loop(
+    agent: &str,
+    session: &str,
+    detector: &IdleDetector,
+    client: &mut client::DaemonClient,
+) -> Result<ExitReason> {
+    let mut state = AgentState::Idle;
+    let mut idle_since: Option<std::time::Instant> = None;
 
     loop {
         // ---- race: daemon message OR poll interval ----
@@ -112,25 +173,25 @@ async fn main() -> Result<()> {
                     Ok(Some(envelope)) => {
                         let keep_running = handle_envelope(
                             envelope,
-                            &agent,
-                            &session,
+                            agent,
+                            session,
                             &mut state,
-                            &mut client,
+                            client,
                         )
                         .await?;
-                        // Reset idle timer on any daemon message (new task, etc).
+                        // Reset idle timer on any daemon message.
                         idle_since = None;
                         if !keep_running {
-                            break;
+                            return Ok(ExitReason::Shutdown);
                         }
                     }
                     Ok(None) => {
-                        warn!("daemon closed connection, exiting");
-                        break;
+                        // EOF — daemon closed connection.
+                        return Ok(ExitReason::Disconnected);
                     }
                     Err(e) => {
-                        error!("error reading from daemon: {e:#}");
-                        break;
+                        warn!("error reading from daemon: {e:#}");
+                        return Ok(ExitReason::Disconnected);
                     }
                 }
             }
@@ -142,7 +203,7 @@ async fn main() -> Result<()> {
         // ---- poll tmux for idle pattern when a task is running ----
         if let AgentState::Running { task_id } = &state.clone() {
             let task_id = *task_id;
-            match tmux::capture_pane(&session, CAPTURE_LINES) {
+            match tmux::capture_pane(session, CAPTURE_LINES) {
                 Ok(lines) => {
                     if detector.is_idle_tail(&lines, IDLE_TAIL) {
                         let now = std::time::Instant::now();
@@ -177,9 +238,6 @@ async fn main() -> Result<()> {
             }
         }
     }
-
-    info!("vaelkor-wrapper exiting");
-    Ok(())
 }
 
 /// Handle one incoming envelope from the daemon.
