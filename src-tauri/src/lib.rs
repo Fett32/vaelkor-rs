@@ -1,9 +1,10 @@
 mod commands;
 mod daemon;
+mod tray;
 mod wrapper;
 mod terminal;
 
-use tauri::Emitter;
+use tauri::{Emitter, Listener, Manager, WindowEvent};
 use terminal::bridge::TerminalBridge;
 use terminal::pane_manager::PaneManager;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -58,9 +59,44 @@ pub fn run() {
         .manage(terminal_bridge)
         .manage(session_info)
         .manage(pane_manager.clone())
+        .on_window_event(|window, event| {
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    // Minimize to tray instead of quitting.
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                WindowEvent::Focused(true) => {
+                    // Restore default tray icon when window regains focus.
+                    tray::set_default_icon(window.app_handle());
+                }
+                _ => {}
+            }
+        })
         .setup(move |app| {
             // Wire up app handle so AppState can emit push events.
             app_state.set_app_handle(app.handle().clone());
+
+            // Set up system tray.
+            if let Err(e) = tray::setup(app.handle()) {
+                tracing::error!("failed to set up system tray: {e}");
+            }
+
+            // Refresh tray menu when agents or tasks change.
+            let handle = app.handle().clone();
+            app.listen("tasks-changed", move |_| {
+                tray::refresh_menu(&handle);
+            });
+            let handle = app.handle().clone();
+            app.listen("agents-changed", move |_| {
+                tray::refresh_menu(&handle);
+            });
+
+            // Flash the tray icon when a task completes.
+            let handle = app.handle().clone();
+            app.listen("task-completed", move |_| {
+                tray::set_task_complete_icon(&handle);
+            });
 
             // Create vaelkor-main tmux session.
             let pm = pane_manager;

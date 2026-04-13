@@ -317,6 +317,7 @@ impl AppState {
 
     /// Transition a task to a new state.  Returns the updated task on success.
     pub fn transition_task(&self, id: Uuid, next: TaskState) -> anyhow::Result<Task> {
+        let is_completing = next == TaskState::Completed;
         let mut s = self.inner.lock();
         let task = s
             .tasks
@@ -327,6 +328,9 @@ impl AppState {
         drop(s);
         self.save();
         self.emit_event("tasks-changed");
+        if is_completing {
+            self.emit_event("task-completed");
+        }
         Ok(result)
     }
 
