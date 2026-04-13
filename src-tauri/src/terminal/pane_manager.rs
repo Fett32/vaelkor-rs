@@ -50,6 +50,7 @@ impl PaneManager {
     pub async fn ensure_main_session(&self) -> Result<()> {
         if self.session_exists(MAIN_SESSION).await {
             tracing::info!("reusing existing {MAIN_SESSION} session");
+            self.scan_existing_panes().await;
             return Ok(());
         }
 
@@ -265,6 +266,62 @@ impl PaneManager {
         } else {
             None
         }
+    }
+
+    /// Scan existing panes in vaelkor-main and populate the in-memory map.
+    /// Called on startup when reusing an existing session to prevent duplicates.
+    async fn scan_existing_panes(&self) {
+        let output = Command::new("tmux")
+            .args([
+                "list-panes", "-t", MAIN_SESSION,
+                "-F", "#{pane_id} #{pane_start_command}",
+            ])
+            .output()
+            .await;
+
+        let output = match output {
+            Ok(o) if o.status.success() => o,
+            _ => return,
+        };
+
+        let mut panes = self.panes.lock().await;
+        let text = String::from_utf8_lossy(&output.stdout);
+
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // Format: "%5 TMUX='' tmux attach -t vaelkor-claude"
+            // Extract pane_id and agent_id from the attach target.
+            let parts: Vec<&str> = line.splitn(2, ' ').collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let pane_id = parts[0].to_string();
+            let cmd = parts[1];
+
+            // Look for "vaelkor-<agent>" in the command.
+            if let Some(pos) = cmd.find("vaelkor-") {
+                let after = &cmd[pos + 8..]; // skip "vaelkor-"
+                let agent_id = after
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_matches('"')
+                    .to_string();
+
+                if !agent_id.is_empty() && !panes.contains_key(&agent_id) {
+                    tracing::info!(agent_id, pane_id, "found existing pane on scan");
+                    panes.insert(agent_id.clone(), PaneInfo {
+                        pane_id,
+                        agent_id,
+                    });
+                }
+            }
+        }
+
+        tracing::info!(count = panes.len(), "scanned existing panes in {MAIN_SESSION}");
     }
 
     /// Check if a tmux session exists.
