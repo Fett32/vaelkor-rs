@@ -17,6 +17,8 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 const MAIN_SESSION: &str = "vaelkor-main";
+/// Maximum right-side columns before we start stacking more aggressively.
+const MAX_RIGHT_COLUMNS: usize = 3;
 
 // ---------------------------------------------------------------------------
 // Pane tracking
@@ -28,6 +30,8 @@ struct PaneInfo {
     pane_id: String,
     /// Agent ID this pane shows
     agent_id: String,
+    /// Which right-side column this pane belongs to (0-based). Orchestrator has None.
+    column: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -102,16 +106,33 @@ impl PaneManager {
         // The attach command — TMUX='' prevents "sessions should be nested" error.
         let attach_cmd = format!("TMUX='' tmux attach -t {agent_session}");
 
-        let pane_id = if pane_count <= 1 && panes.is_empty() {
-            // First real agent — use the existing initial pane (send the command into it).
-            let output = Command::new("tmux")
-                .args([
-                    "send-keys", "-t", &format!("{MAIN_SESSION}:0.0"),
-                    "C-c",  // cancel any running command
-                ])
+        let is_orchestrator = agent_id == "orchestrator";
+
+        // Layout strategy:
+        //   Orchestrator = full-height left column (pane 0, column=None).
+        //   Other agents fill columns to the right.
+        //   New column (-h split) until MAX_RIGHT_COLUMNS, then stack (-v split)
+        //   within the column with fewest panes.
+
+        // Count agents per right-side column.
+        let mut column_counts: HashMap<usize, usize> = HashMap::new();
+        let mut column_panes: HashMap<usize, String> = HashMap::new(); // column → any pane_id in it
+        let mut max_column: Option<usize> = None;
+        for info in panes.values() {
+            if let Some(col) = info.column {
+                *column_counts.entry(col).or_insert(0) += 1;
+                column_panes.entry(col).or_insert_with(|| info.pane_id.clone());
+                max_column = Some(max_column.map_or(col, |m: usize| m.max(col)));
+            }
+        }
+        let num_columns = column_counts.len();
+
+        let (pane_id, column) = if pane_count <= 1 && panes.is_empty() {
+            // First real agent — use the existing initial pane.
+            let _ = Command::new("tmux")
+                .args(["send-keys", "-t", &format!("{MAIN_SESSION}:0.0"), "C-c"])
                 .output()
                 .await;
-            let _ = output; // ignore errors
 
             let output = Command::new("tmux")
                 .args([
@@ -130,42 +151,53 @@ impl PaneManager {
                 );
             }
 
-            // Get the pane ID of pane 0.
-            self.get_pane_id(MAIN_SESSION, 0).await
-                .unwrap_or_else(|| "%0".to_string())
-        } else {
-            // Split to create a new pane.
-            let output = Command::new("tmux")
-                .args([
-                    "split-window",
-                    "-t", MAIN_SESSION,
-                    "-h",  // horizontal split (side by side)
-                    "-P", "-F", "#{pane_id}",  // print new pane ID
-                    &attach_cmd,
-                ])
-                .env("TMUX", "")
+            let pid = self.get_pane_id(MAIN_SESSION, 0).await
+                .unwrap_or_else(|| "%0".to_string());
+            let col = if is_orchestrator { None } else { Some(0) };
+            (pid, col)
+
+        } else if is_orchestrator {
+            // Orchestrator always gets a new column on the left via -h split,
+            // then we swap it to pane 0.
+            let pid = self.split_horizontal(MAIN_SESSION, &attach_cmd).await?;
+            // Swap to position 0 so it's on the left.
+            let _ = Command::new("tmux")
+                .args(["swap-pane", "-s", &pid, "-t", &format!("{MAIN_SESSION}:0.0")])
                 .output()
-                .await
-                .context("split-window for agent pane")?;
+                .await;
+            let pid = self.get_pane_id(MAIN_SESSION, 0).await
+                .unwrap_or(pid);
+            (pid, None)
 
-            if !output.status.success() {
-                anyhow::bail!(
-                    "split-window failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+        } else if num_columns < MAX_RIGHT_COLUMNS {
+            // Room for a new column — split horizontally (new column to the right).
+            let pid = self.split_horizontal(MAIN_SESSION, &attach_cmd).await?;
+            let col = max_column.map_or(0, |m| m + 1);
+            (pid, Some(col))
 
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        } else {
+            // All columns full — stack in the column with fewest panes.
+            let target_col = (0..num_columns)
+                .min_by_key(|c| column_counts.get(c).copied().unwrap_or(0))
+                .unwrap_or(0);
+
+            let split_target = column_panes.get(&target_col)
+                .cloned()
+                .unwrap_or_else(|| format!("{MAIN_SESSION}:0.1"));
+
+            let pid = self.split_vertical(&split_target, &attach_cmd).await?;
+            (pid, Some(target_col))
         };
 
-        // Rebalance layout.
+        // Rebalance: orchestrator gets left column, right side evens out.
         self.rebalance_layout().await;
 
-        tracing::info!(agent_id, pane_id = %pane_id, "added agent pane to {MAIN_SESSION}");
+        tracing::info!(agent_id, pane_id = %pane_id, column = ?column, "added agent pane to {MAIN_SESSION}");
 
         panes.insert(agent_id.to_string(), PaneInfo {
             pane_id,
             agent_id: agent_id.to_string(),
+            column,
         });
 
         Ok(())
@@ -226,11 +258,57 @@ impl PaneManager {
         self.panes.lock().await.keys().cloned().collect()
     }
 
+    /// Split horizontally (new column to the right).
+    async fn split_horizontal(&self, session: &str, cmd: &str) -> Result<String> {
+        let output = Command::new("tmux")
+            .args([
+                "split-window", "-t", session,
+                "-h",  // new column
+                "-P", "-F", "#{pane_id}",
+                cmd,
+            ])
+            .env("TMUX", "")
+            .output()
+            .await
+            .context("split-window -h")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "split-window -h failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// Split vertically within an existing pane (stack top/bottom).
+    async fn split_vertical(&self, target: &str, cmd: &str) -> Result<String> {
+        let output = Command::new("tmux")
+            .args([
+                "split-window", "-t", target,
+                "-v",  // stack within column
+                "-P", "-F", "#{pane_id}",
+                cmd,
+            ])
+            .env("TMUX", "")
+            .output()
+            .await
+            .context("split-window -v")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "split-window -v failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
     /// Rebalance the pane layout in vaelkor-main.
+    /// Uses main-vertical: orchestrator gets full left column, agents stack on right.
     async fn rebalance_layout(&self) {
-        let layout = "tiled"; // tmux auto-tiles evenly
         let _ = Command::new("tmux")
-            .args(["select-layout", "-t", MAIN_SESSION, layout])
+            .args(["select-layout", "-t", MAIN_SESSION, "main-vertical"])
             .output()
             .await;
     }
@@ -312,10 +390,22 @@ impl PaneManager {
                     .to_string();
 
                 if !agent_id.is_empty() && !panes.contains_key(&agent_id) {
-                    tracing::info!(agent_id, pane_id, "found existing pane on scan");
+                    // Orchestrator has no column; others get auto-assigned.
+                    let column = if agent_id == "orchestrator" {
+                        None
+                    } else {
+                        // Assign to next available column based on scan order.
+                        let existing_cols: std::collections::HashSet<usize> = panes.values()
+                            .filter_map(|p| p.column)
+                            .collect();
+                        let next = (0..).find(|c| !existing_cols.contains(c)).unwrap_or(0);
+                        Some(next)
+                    };
+                    tracing::info!(agent_id, pane_id, column = ?column, "found existing pane on scan");
                     panes.insert(agent_id.clone(), PaneInfo {
                         pane_id,
                         agent_id,
+                        column,
                     });
                 }
             }
