@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vaelkor</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+
+      <!-- ── Header ───────────────────────────────────────────────────── -->
+      <header id="header">
+        <span class="logo">VAELKOR</span>
+        <span class="session-meta" id="session-meta">—</span>
+      </header>
+
+      <!-- ── Agent panel ──────────────────────────────────────────────── -->
+      <aside id="agent-panel">
+        <div class="panel-header">
+          <span>Agents</span>
+          <button id="btn-show-register">+ Register</button>
+        </div>
+        <div id="agent-list">
+          <p class="agent-empty">No agents registered.</p>
+        </div>
+        <!-- Register agent inline form (hidden until toggled) -->
+        <form id="register-form" class="hidden" autocomplete="off">
+          <input id="reg-id"   type="text" placeholder="Agent ID"                   required />
+          <input id="reg-name" type="text" placeholder="Display name"               required />
+          <input id="reg-tmux" type="text" placeholder="tmux session (optional)" />
+          <button type="submit">Register agent</button>
+        </form>
+      </aside>
+
+      <!-- ── Task panel ───────────────────────────────────────────────── -->
+      <main id="task-panel">
+        <div id="task-toolbar">
+          <input id="task-search" type="search" placeholder="Filter tasks…" />
+          <select id="task-filter-state">
+            <option value="">All states</option>
+            <option value="ASSIGNED">Assigned</option>
+            <option value="ACCEPTED">Accepted</option>
+            <option value="COMPLETED">Completed</option>
+            <option value="BLOCKED">Blocked</option>
+            <option value="CANCELLED">Cancelled</option>
+            <option value="REJECTED">Rejected</option>
+            <option value="TIMED_OUT">Timed out</option>
+            <option value="INTERRUPTED">Interrupted</option>
+            <option value="RECOVERING">Recovering</option>
+            <option value="STALE">Stale</option>
+          </select>
+          <div class="spacer"></div>
+          <button id="btn-new-task">+ New task</button>
+        </div>
+        <div id="task-list-scroll">
+          <!-- TaskList renders here -->
+        </div>
+      </main>
+
+      <!-- ── Terminal panel ───────────────────────────────────────────── -->
+      <section id="terminal-panel">
+        <div id="terminal-tabs">
+          <!-- tabs injected by Terminal.js -->
+          <button id="term-add-tab" title="Open new terminal tab">+</button>
+        </div>
+        <div id="terminal-container">
+          <!-- xterm.js slots injected by Terminal.js -->
+        </div>
+      </section>
+
+    </div><!-- #app -->
+
+    <!-- ── New-task modal ────────────────────────────────────────────── -->
+    <div id="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div id="task-modal">
+        <h2 id="modal-title">New Task</h2>
+        <label>
+          Title
+          <input id="modal-title-input" type="text" placeholder="Short task title" required />
+        </label>
+        <label>
+          Description
+          <textarea id="modal-desc-input" rows="3" placeholder="What should the agent do?"></textarea>
+        </label>
+        <label>
+          Assign to agent
+          <select id="modal-agent-select">
+            <option value="">— unassigned —</option>
+          </select>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel-modal" id="btn-close-modal">Cancel</button>
+          <button type="button" class="btn-submit"       id="btn-submit-task">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
