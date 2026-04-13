@@ -83,6 +83,13 @@ pub fn run() {
             let configs_for_launch = agent_configs;
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(300));
+
+                // Kill stale wrapper processes from previous daemon runs.
+                let _ = std::process::Command::new("pkill")
+                    .args(["-f", "vaelkor-wrapper"])
+                    .output();
+                std::thread::sleep(std::time::Duration::from_millis(200));
+
                 let mut children = daemon::config::launch_wrappers(&configs_for_launch);
 
                 // Keep children alive until the process exits, then clean up.
