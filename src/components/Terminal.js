@@ -100,8 +100,20 @@ function createTerminal() {
     term.loadAddon(fitAddon);
   }
 
+  function reportSize() {
+    if (!term) return;
+    invoke("terminal_resize", { cols: term.cols, rows: term.rows }).catch(() => {});
+  }
+
+  function fitAndReport() {
+    if (fitAddon) fitAddon.fit();
+    reportSize();
+  }
+
   term.open($container);
-  if (fitAddon) fitAddon.fit();
+  // First layout pass: flex/grid may not have final sizes yet; fit twice on rAF.
+  fitAndReport();
+  requestAnimationFrame(() => requestAnimationFrame(fitAndReport));
 
   // -----------------------------------------------------------------------
   // Clipboard: Ctrl+Shift+C to copy, Ctrl+Shift+V to paste.
@@ -148,24 +160,12 @@ function createTerminal() {
     });
   });
 
-  // Report terminal size to backend so PTY matches xterm.js dimensions.
-  function reportSize() {
-    if (!term) return;
-    invoke("terminal_resize", { cols: term.cols, rows: term.rows }).catch(() => {});
-  }
-
   // Resize on container resize.
-  const ro = new ResizeObserver(() => {
-    if (fitAddon) fitAddon.fit();
-    reportSize();
-  });
+  const ro = new ResizeObserver(() => fitAndReport());
   ro.observe($container);
 
   // Also report on xterm resize event.
   term.onResize(() => reportSize());
-
-  // Initial size report.
-  reportSize();
 }
 
 // ---------------------------------------------------------------------------
