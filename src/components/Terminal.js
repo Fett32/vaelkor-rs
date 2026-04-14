@@ -145,6 +145,14 @@ function createTerminal() {
     return true;
   });
 
+  // Disable middle-click paste in xterm.js — tmux owns middle-click.
+  $container.addEventListener("mousedown", (e) => {
+    if (e.button === 1) e.preventDefault();
+  });
+  $container.addEventListener("auxclick", (e) => {
+    if (e.button === 1) e.preventDefault();
+  });
+
   // -----------------------------------------------------------------------
   // Key send queue — serialise IPC calls so rapid keypresses are never
   // reordered by the async Tauri bridge. Each send waits for the previous
