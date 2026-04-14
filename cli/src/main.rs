@@ -51,6 +51,11 @@ struct CliTaskCancel {
 }
 
 #[derive(Serialize)]
+struct CliTaskComplete {
+    task_id: Uuid,
+}
+
+#[derive(Serialize)]
 struct CliSpawn {
     agent: String,
     role: String,
@@ -247,6 +252,11 @@ enum TaskAction {
         /// Task ID (UUID)
         task_id: Uuid,
     },
+    /// Mark a task as completed
+    Complete {
+        /// Task ID (UUID)
+        task_id: Uuid,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +411,21 @@ async fn cmd_task_cancel(task_id: Uuid) -> Result<()> {
     }
 
     println!("Task {} cancelled.", &task_id.to_string()[..8]);
+
+    Ok(())
+}
+
+async fn cmd_task_complete(task_id: Uuid) -> Result<()> {
+    let req = Envelope::new("cli.task.complete", CliTaskComplete { task_id })?;
+    let resp = send_request(&req).await?;
+
+    if resp.kind == "cli.error" {
+        let err: ErrorResponsePayload = serde_json::from_value(resp.payload)?;
+        eprintln!("error: {}", err.error);
+        std::process::exit(1);
+    }
+
+    println!("Task {} completed.", &task_id.to_string()[..8]);
 
     Ok(())
 }
@@ -569,6 +594,7 @@ async fn main() {
             TaskAction::Get { task_id } => cmd_task_get(task_id).await,
             TaskAction::Create { title, description } => cmd_task_create(title, description).await,
             TaskAction::Cancel { task_id } => cmd_task_cancel(task_id).await,
+            TaskAction::Complete { task_id } => cmd_task_complete(task_id).await,
         },
         Commands::Project { action } => match action {
             ProjectAction::List => cmd_project_list().await,

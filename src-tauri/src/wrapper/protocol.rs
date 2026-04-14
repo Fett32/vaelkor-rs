@@ -29,6 +29,7 @@ pub const MSG_CLI_TASK_LIST: &str = "cli.task.list";
 pub const MSG_CLI_TASK_GET: &str = "cli.task.get";
 pub const MSG_CLI_TASK_CREATE: &str = "cli.task.create";
 pub const MSG_CLI_TASK_CANCEL: &str = "cli.task.cancel";
+pub const MSG_CLI_TASK_COMPLETE: &str = "cli.task.complete";
 pub const MSG_CLI_ASSIGN: &str = "cli.assign";
 pub const MSG_CLI_SPAWN: &str = "cli.spawn";
 pub const MSG_CLI_KILL: &str = "cli.kill";
@@ -156,6 +157,11 @@ pub struct UserIntervention {
 pub struct CliTaskCreate {
     pub title: String,
     pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliTaskComplete {
+    pub task_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
